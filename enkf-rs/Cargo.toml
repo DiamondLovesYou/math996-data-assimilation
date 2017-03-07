@@ -1,0 +1,9 @@
+[package]
+authors = ["Richard Diamond <wichard@vitalitystudios.com>"]
+name = "enkf"
+version = "0.1.0"
+
+[dependencies]
+alga = "0.5.1"
+ndarray = "*"
+num-traits = "0.1.37"
