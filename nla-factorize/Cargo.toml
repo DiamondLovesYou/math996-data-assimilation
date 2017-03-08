@@ -1,9 +1,0 @@
-[package]
-authors = ["Richard Diamond <wichard@vitalitystudios.com>"]
-name = "nla-factorize"
-version = "0.1.0"
-
-[dependencies]
-alga = "0.5.1"
-ndarray = "0.8.0"
-num = "0.1.37"
