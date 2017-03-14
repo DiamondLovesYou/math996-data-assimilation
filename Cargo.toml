@@ -1,3 +1,4 @@
 
 [workspace]
-members = ["enkf-rs", "nla-factorize"]
+members = ["na-quadrature", "na-discrete-filtering",
+           "book-problems/p13",]
