@@ -1,6 +1,6 @@
 
 use nd::{Array, ArrayBase, ArrayView, ArrayViewMut, Ix2, Ix1,
-         Axis, DataMut, ViewRepr};
+         Axis};
 use linxal::types::{LinxalScalar};
 use linxal::solve_linear::general::SolveLinear;
 use num_traits::{NumCast, One, Zero, Float};
@@ -12,27 +12,14 @@ use std::ops::{Add, Sub, Mul, Div,
                AddAssign, SubAssign,
                DivAssign, MulAssign,};
 
-use {Initializer, Algorithm, Workspace};
+use {Algorithm, Workspace};
 use utils::CholeskyLDL;
 
-#[derive(Debug, Clone)]
-pub struct Init<'a, E>
-  where E: LinxalScalar,
-{
-  /// Possibly an estimate.
-  pub initial_mean: ArrayView<'a, E, Ix1>,
-  pub initial_covariance: ArrayView<'a, E, Ix2>,
-  pub observation_operator: ArrayView<'a, E, Ix2>,
-  pub gamma: ArrayView<'a, E::RealPart, Ix1>,
-  pub sigma: ArrayView<'a, E::RealPart, Ix1>,
-  pub ensemble_count: usize,
-}
-impl<'a, E> Init<'a, E>
-  where E: LinxalScalar,
-{ }
-impl<'a, E,> Initializer for Init<'a, E>
-  where E: LinxalScalar,
-{ }
+use super::extend_dim_mut;
+
+pub use super::EnsembleState as State;
+pub use super::EnsembleInit as Init;
+pub use super::Model;
 
 #[derive(Debug)]
 pub struct OwnedWorkspace<E>
@@ -42,7 +29,7 @@ pub struct OwnedWorkspace<E>
   covariance: Array<E, Ix2>,
   ensembles: Array<E, Ix2>,
 
-  ///
+  /// d
   innovation: Array<E, Ix1>,
   kalman_gain: Array<E, Ix2>,
   s: Array<E, Ix2>,
@@ -148,53 +135,7 @@ impl<'a, E> Workspace<Init<'a, E>> for OwnedWorkspace<E>
   }
 }
 
-#[derive(Debug)]
-pub struct State<'a, E>
-  where E: LinxalScalar,
-{
-  pub mean: ArrayView<'a, E, Ix1>,
-  pub covariance: ArrayView<'a, E, Ix2>,
-  pub ensembles: ArrayView<'a, E, Ix2>,
-}
-impl<'a, E> ::State<'a> for State<'a, E>
-  where E: LinxalScalar,
-{
-  type Workspace = OwnedWorkspace<E>;
-  fn current(ws: &'a OwnedWorkspace<E>) -> State<'a, E> {
-    State {
-      mean: ws.mean.view(),
-      covariance: ws.covariance.view(),
-      ensembles: ws.ensembles.view(),
-    }
-  }
-}
 
-pub struct Model<E, F1, F2>
-  where F1: for<'r, 's> Fn(ArrayView<'r, E, Ix1>, ArrayViewMut<'s, E, Ix1>),
-        F2: FnMut(u64) -> Option<Array<E, Ix1>>,
-        E: LinxalScalar,
-{
-  /// Don't modify this; safe to read though.
-  pub calls: u64,
-  pub model: F1,
-
-  /// Will be called at most once per iteration.
-  pub next_observation: F2,
-}
-
-impl<E, F1, F2> Model<E, F1, F2>
-  where F1: for<'r, 's> Fn(ArrayView<'r, E, Ix1>, ArrayViewMut<'s, E, Ix1>),
-        F2: FnMut(u64) -> Option<Array<E, Ix1>>,
-        E: LinxalScalar,
-{
-  pub fn new(model: F1, observation: F2) -> Model<E, F1, F2> {
-    Model {
-      calls: 0,
-      model: model,
-      next_observation: observation,
-    }
-  }
-}
 
 pub struct Algo<'a, E, F1, F2>
   where E: LinxalScalar,
@@ -476,21 +417,4 @@ Algorithm for Algo<'init, E, F1, F2>
 
     Ok(())
   }
-}
-
-fn extend_dim_mut<D>(d: &mut ArrayBase<D, Ix1>, t: bool)
-                     -> ArrayBase<ViewRepr<&mut D::Elem>, Ix2>
-  where D: DataMut,
-{
-  let d_dim = d.dim();
-  let d_slice = d.as_slice_mut().expect("d_slice");
-  let dim = if !t {
-    (d_dim, 1)
-  } else {
-    (1, d_dim)
-  };
-  let d2 = ArrayBase::<ViewRepr<&mut D::Elem>, _>::from_shape(dim, d_slice)
-      .expect("d2");
-
-  d2
 }

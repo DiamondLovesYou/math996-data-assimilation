@@ -2,6 +2,7 @@
 use nd::{ArrayBase, Ix1, Ix2, Array, Data,};
 use linxal::factorization::cholesky::*;
 use linxal::types::Symmetric;
+use linxal::types::{c32, c64};
 
 pub trait CholeskyLDL: Cholesky + Sized {
   fn compute<D1: Data>(a: &ArrayBase<D1, Ix2>, uplo: Symmetric)
@@ -39,4 +40,36 @@ impl CholeskyLDL for f64 {
 
     Ok((u, d))
   }
+}
+
+pub trait Sqrt {
+  fn _sqrt(&self) -> Self;
+}
+impl Sqrt for c32 {
+  fn _sqrt(&self) -> Self { self.sqrt() }
+}
+impl Sqrt for c64 {
+  fn _sqrt(&self) -> Self { self.sqrt() }
+}
+impl Sqrt for f32 {
+  fn _sqrt(&self) -> Self { self.sqrt() }
+}
+impl Sqrt for f64 {
+  fn _sqrt(&self) -> Self { self.sqrt() }
+}
+
+pub trait Exp {
+  fn _exp(&self) -> Self;
+}
+impl Exp for c32 {
+  fn _exp(&self) -> c32 { self.exp() }
+}
+impl Exp for c64 {
+  fn _exp(&self) -> c64 { self.exp() }
+}
+impl Exp for f32 {
+  fn _exp(&self) -> f32 { self.exp() }
+}
+impl Exp for f64 {
+  fn _exp(&self) -> f64 { self.exp() }
 }

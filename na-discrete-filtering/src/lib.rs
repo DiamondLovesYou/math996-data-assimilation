@@ -31,15 +31,15 @@ pub mod kalman;
 /// gemm panics if dims are wrong. the function in question
 /// should instead return a Result). XXX
 
+
 pub trait Workspace<I>
   where I: Initializer,
 {
   fn alloc(i: I, rand: &mut Rng, total_steps: u64) -> Self;
 }
 pub trait Initializer { }
-pub trait State<'a> {
-  type Workspace;
-  fn current(ws: &'a Self::Workspace) -> Self;
+pub trait State<'a, WS> {
+  fn current(ws: &'a WS) -> Self;
 }
 
 pub trait Algorithm {
@@ -52,6 +52,7 @@ pub trait Algorithm {
           model: &mut Self::Model,
           steps: u64) -> Self;
 
+  /// This function shall not allocate.
   fn next_step(&self,
                current_step: u64,
                total_steps: u64,
