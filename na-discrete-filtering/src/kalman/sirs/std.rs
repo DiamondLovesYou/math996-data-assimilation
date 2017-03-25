@@ -7,17 +7,17 @@ use num_traits::{NumCast, One, Zero, Float};
 use rand::Rng;
 use rand::distributions::IndependentSample;
 use rand::distributions::normal::Normal;
-use std::marker::PhantomData;
 use std::ops::{Add, Sub, Mul, Div,
                AddAssign, SubAssign,
                DivAssign, MulAssign,};
 
 use {Algorithm};
 use utils::{CholeskyLDL, Sqrt, Exp};
+use rayon::prelude::*;
+use nd_par::prelude::*;
 
 use super::super::{ResampleForcing, EnsembleWorkspace,
-                   EnsemblePredictModelStuff, EnsemblePredict,
-                   Model};
+                   EnsemblePredictModelStuff, EnsemblePredict};
 
 pub use super::super::etkf::{Init};
 
@@ -28,6 +28,8 @@ pub struct Workspace<E>
   mean: Array<E, Ix1>,
   covariance: Array<E, Ix2>,
   ensembles: Array<E, Ix2>,
+
+  model_workspace: Array<E, Ix2>,
 
   forcing: Array<E, Ix2>,
 
@@ -41,6 +43,7 @@ pub struct Workspace<E>
 
 impl<'a, E> ::Workspace<Init<'a, E>> for Workspace<E>
   where E: LinxalScalar + CholeskyLDL + From<f64> + NumCast + SolveLinear,
+        E: Send + Sync,
         E: Add<E, Output = E> + Sub<E, Output = E>,
         E: AddAssign<E> + SubAssign<E>,
         E: Add<<E as LinxalScalar>::RealPart, Output = E> + Sub<<E as LinxalScalar>::RealPart, Output = E>,
@@ -56,6 +59,8 @@ impl<'a, E> ::Workspace<Init<'a, E>> for Workspace<E>
       initial_mean,
       initial_covariance,
       ensemble_count,
+      observation_operator,
+      model_workspace_size,
       ..
     } = i;
 
@@ -108,10 +113,13 @@ impl<'a, E> ::Workspace<Init<'a, E>> for Workspace<E>
       covariance: c,
       ensembles: ensembles,
 
+      model_workspace: ArrayBase::zeros((ensemble_count, model_workspace_size)),
+
       forcing: ArrayBase::zeros((n, ensemble_count)),
 
       ensemble_predict: ArrayBase::zeros((n, ensemble_count)),
-      ensemble_innovation: ArrayBase::zeros((n, ensemble_count)),
+      ensemble_innovation: ArrayBase::zeros((observation_operator.dim().0,
+                                             ensemble_count)),
       centered_ensemble: ArrayBase::zeros((n, ensemble_count)),
     }
   }
@@ -132,7 +140,8 @@ impl<E> EnsembleWorkspace<E> for Workspace<E>
   fn ensembles_view(&self) -> ArrayView<E, Ix2> { self.ensembles.view() }
 }
 impl<E> EnsemblePredict<E> for Workspace<E>
-  where E: LinxalScalar + AddAssign<E>,
+  where E: LinxalScalar + Send + Sync + AddAssign<E>,
+        ::rayon::par_iter::reduce::SumOp: ::rayon::par_iter::reduce::ReduceOp<E>,
 {
   fn ensemble_predict_stuff(&mut self) -> EnsemblePredictModelStuff<E> {
     EnsemblePredictModelStuff {
@@ -141,27 +150,29 @@ impl<E> EnsemblePredict<E> for Workspace<E>
       ensemble_predict: self.ensemble_predict.view_mut(),
       ensembles: self.ensembles.view(),
       estimator: None,
+      model_workspace: self.model_workspace.view_mut(),
     }
   }
 }
 
-pub struct Algo<'a, E, F1, F2>
+pub struct Algo<'a, E>
   where E: LinxalScalar,
 {
   ensemble_count: usize,
   gamma: ArrayView<'a, E::RealPart, Ix1>,
   sigma: ArrayView<'a, E::RealPart, Ix1>,
   observation_operator: ArrayView<'a, E, Ix2>,
-
-  _i: PhantomData<(F1, F2)>,
 }
 
-impl<'init, 'state, F1, F2, E>
-Algorithm for Algo<'init, E, F1, F2>
-  where F1: for<'r, 's> Fn(ArrayView<'r, E, Ix1>, ArrayViewMut<'s, E, Ix1>),
-        F2: FnMut(u64) -> Option<Array<E, Ix1>>,
+impl<'init, 'state, E, M, Ob>
+Algorithm<M, Ob> for Algo<'init, E>
+  where M: ::Model<E>,
+        Ob: ::Observer<E> + Send + Sync,
         E: LinxalScalar + CholeskyLDL + From<f64> + PartialOrd,
-        E: NumCast + SolveLinear + Exp + Sqrt,
+        ::rayon::par_iter::reduce::SumOp: ::rayon::par_iter::reduce::ReduceOp<E>,
+        E: NumCast + SolveLinear + Exp + Sqrt + ::rand::Rand,
+        E: Send + Sync,
+        <E as LinxalScalar>::RealPart: Send + Sync,
         E: Add<E, Output = E> + Sub<E, Output = E>,
         E: AddAssign<E> + SubAssign<E>,
         E: Add<<E as LinxalScalar>::RealPart, Output = E> + Sub<<E as LinxalScalar>::RealPart, Output = E>,
@@ -172,11 +183,11 @@ Algorithm for Algo<'init, E, F1, F2>
 {
   type Init = Init<'init, E>;
   type WS = Workspace<E>;
-  type Model = Model<E, F1, F2>;
 
   fn init(i: &Init<'init, E>,
           _rand: &mut Rng,
-          _model: &mut Model<E, F1, F2>,
+          _model: &mut ::ModelStats<M>,
+          _observer: &Ob,
           _: u64) -> Self
   {
     Algo {
@@ -184,8 +195,6 @@ Algorithm for Algo<'init, E, F1, F2>
       gamma: i.gamma.clone(),
       sigma: i.sigma.clone(),
       observation_operator: i.observation_operator.clone(),
-
-      _i: PhantomData,
     }
   }
 
@@ -194,28 +203,33 @@ Algorithm for Algo<'init, E, F1, F2>
                _total_steps: u64,
                mut rand: &mut Rng,
                workspace: &mut Workspace<E>,
-               model: &mut Model<E, F1, F2>)
+               model: &mut ::ModelStats<M>,
+               observer: &Ob)
                -> Result<(), ()>
   {
     use nd::linalg::general_mat_mul;
 
-    let n = workspace.mean.dim();
+    fn max<T: PartialOrd>(a: T, b: T) -> T { if a > b { a } else { b } }
+
     let neg_one = NumCast::from(-1).unwrap();
+    let neg_half: E = NumCast::from(-1.0f64/2.0).unwrap();
 
     let normal = Normal::new(Zero::zero(), One::one());
 
     // predict
 
     workspace.ensemble_predict.fill(Zero::zero());
-
     workspace.resample_forcing(self.sigma.view(),
                                normal,
                                &mut rand);
-    workspace.ensemble_predict(model);
+    workspace.ensemble_predict(current_step, model);
 
-    let observation = (model.next_observation)(current_step);
-    let observation = observation.expect("missing observation for step TODO");
-    workspace.ensemble_innovation.assign(&observation);
+    workspace.ensemble_innovation
+      .axis_iter_mut(Axis(1))
+      .into_par_iter()
+      .for_each(|mut d| {
+        assert!(observer.observe_into(current_step, d.view_mut()));
+      });
     general_mat_mul(neg_one,
                     &self.observation_operator,
                     &workspace.ensemble_predict,
@@ -223,28 +237,39 @@ Algorithm for Algo<'init, E, F1, F2>
                     &mut workspace.ensemble_innovation);
 
     {
-      let mut w = workspace.ensemble_innovation.view_mut();
-      let neg_half: E = NumCast::from(-1.0f64/2.0).unwrap();
-      for i in 0..n {
-        let gamma = self.gamma[i];
-        let gamma_sq = gamma * gamma;
+      workspace.ensemble_innovation
+        .axis_iter_mut(Axis(0))
+        .into_par_iter()
+        .zip(self.gamma.axis_iter(Axis(0)).into_par_iter())
+        .for_each(|(mut w, gamma)| {
+          let gamma_sq = gamma[()] * gamma[()];
 
-        let mut sum: E = Zero::zero();
-        for j in 0..self.ensemble_count {
-          let v: E = neg_half * (w[[i, j]] * w[[i, j]] / gamma_sq);
-          let v = v._exp();
+          let sum = w
+            .axis_iter_mut(Axis(0))
+            .into_par_iter()
+            .fold(|| E::zero(),
+                  |sum, mut w| {
+                    let v: E = neg_half * w[()] * w[()] / gamma_sq;
+                    let v = v._exp();
 
-          w[[i, j]] = v;
-          sum += v;
-        }
+                    w[()] = v;
 
-        // cumsum
-        let mut cumsum = Zero::zero();
-        for j in 0..self.ensemble_count {
-          cumsum += w[[i, j]] / sum;
-          w[[i, j]] = cumsum;
-        }
-      }
+                    sum + v
+                  })
+            .sum();
+
+          let _cumsum = w
+            .axis_iter_mut(Axis(0))
+            .into_par_iter()
+            .fold(|| E::zero(),
+                  |cumsum, mut w| {
+                    let c = w[()] / sum;
+                    w[()] = c;
+
+                    cumsum + c
+                  })
+            .sum();
+        });
     }
 
     {
@@ -253,16 +278,20 @@ Algorithm for Algo<'init, E, F1, F2>
       let ws = workspace.ensemble_innovation.view();
 
       for i in 0..self.ensemble_count {
-        let mut ix = ws.dim().1;
+        let mut ix = ws.dim().1 - 1;
         for k in 0..ws.dim().1 {
-          let mut norm: E = Zero::zero();
+          let mut norm: Option<E> = None;
 
           for j in 0..ws.dim().0 {
-            norm += ws[[j, k]] * ws[[j, k]].cj();
+            if let Some(ref mut v) = norm {
+              *v = max(*v, ws[[j, k]]);
+            } else {
+              norm = Some(ws[[j, k]]);
+            }
           }
+          let norm = norm.unwrap();
 
-          let norm = norm._sqrt();
-          let sample = normal.ind_sample(&mut rand);
+          let sample = rand.next_f64();
           let sample = NumCast::from(sample).unwrap();
           if norm > sample {
             ix = k;
@@ -270,7 +299,9 @@ Algorithm for Algo<'init, E, F1, F2>
           }
         }
 
-        u.row_mut(i).assign(&uhat.subview(Axis(1), ix));
+        u.row_mut(i)
+          .assign(&uhat.subview(Axis(1),
+                                ix));
       }
     }
 

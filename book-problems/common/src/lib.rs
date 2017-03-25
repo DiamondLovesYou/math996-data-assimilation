@@ -1,23 +1,26 @@
-#![feature(unboxed_closures)]
-#![feature(fn_traits)]
-
 extern crate rand;
 #[macro_use]
 extern crate ndarray as nd;
 extern crate num_traits;
 extern crate na_discrete_filtering as na_df;
-extern crate gnuplot;
+extern crate util;
+extern crate plot_helper;
 
-use nd::{Array, ArrayBase, ArrayView, ArrayViewMut, RcArray,
-         Ix1, Ix2, Ix3,
+use nd::{Array, ArrayBase, ArrayView, ArrayViewMut,
+         Ix1, Ix2,
          arr1, arr2,
          Axis};
 use na_df::kalman::*;
+use na_df::utils::{extend_dim_ref};
+use na_df::{Observer, Model, ModelStats};
 
 use rand::isaac::Isaac64Rng;
 use rand::SeedableRng;
 use rand::distributions::IndependentSample;
 use rand::distributions::normal::Normal;
+
+pub use util::{ModelTruth, StateSteps};
+pub use plot_helper::make_ensemble_plots;
 
 #[derive(Copy, Clone, Debug)]
 pub struct SinMapSetup {
@@ -83,8 +86,8 @@ impl Into<SinMapData> for SinMapSetup {
     SinMapData {
       rand: Some(rand),
       params: self,
-      truth: truth.to_shared(),
-      observations: observations.to_shared(),
+      truth: truth,
+      observations: observations,
 
       initial_mean: initial_mean,
       initial_covariance: initial_covariance,
@@ -100,8 +103,8 @@ impl Into<SinMapData> for SinMapSetup {
 pub struct SinMapData {
   pub rand: Option<Isaac64Rng>,
   pub params: SinMapSetup,
-  pub truth: RcArray<f64, Ix1>,
-  pub observations: RcArray<f64, Ix1>,
+  pub truth: Array<f64, Ix1>,
+  pub observations: Array<f64, Ix1>,
 
   pub initial_mean: Array<f64, Ix1>,
   pub initial_covariance: Array<f64, Ix2>,
@@ -113,61 +116,24 @@ pub struct SinMapData {
 
 #[derive(Copy, Clone)]
 pub struct SinMapDataModel<'a>(&'a SinMapData);
-impl<'a> SinMapDataModel<'a> {
-  fn run(&self, v: ArrayView<f64, Ix1>, mut dest: ArrayViewMut<f64, Ix1>) {
-    dest[0] = self.0.params.alpha * v[0].sin();
-  }
-}
-impl<'a, 'b, 'c> FnOnce<(ArrayView<'b, f64, Ix1>, ArrayViewMut<'c, f64, Ix1>)> for SinMapDataModel<'a> {
-  type Output = ();
-  extern "rust-call" fn call_once(self,
-                                  (v, dest): (ArrayView<'b, f64, Ix1>, ArrayViewMut<'c, f64, Ix1>))
-                                  -> Self::Output
-  {
-    self.run(v, dest);
-    ()
-  }
-}
-impl<'a, 'b, 'c> FnMut<(ArrayView<'b, f64, Ix1>, ArrayViewMut<'c, f64, Ix1>)> for SinMapDataModel<'a> {
-  extern "rust-call" fn call_mut(&mut self,
-                                 (v, dest): (ArrayView<'b, f64, Ix1>, ArrayViewMut<'c, f64, Ix1>))
-                                 -> Self::Output
-  {
-    self.run(v, dest)
-  }
-}
-impl<'a, 'b, 'c> Fn<(ArrayView<'b, f64, Ix1>, ArrayViewMut<'c, f64, Ix1>)> for SinMapDataModel<'a> {
-  extern "rust-call" fn call(&self,
-                             (v, dest): (ArrayView<'b, f64, Ix1>, ArrayViewMut<'c, f64, Ix1>))
-                             -> Self::Output
-  {
-    self.run(v, dest)
+impl<'a> Model<f64> for SinMapDataModel<'a> {
+  fn workspace_size() -> usize { 0 }
+  fn run(&self, _step: u64,
+         _workspace: ArrayViewMut<f64, Ix1>,
+         mean: ArrayView<f64, Ix1>,
+         mut out: ArrayViewMut<f64, Ix1>) {
+    out[0] = self.0.params.alpha * mean[0].sin();
   }
 }
 #[derive(Clone, Copy)]
 pub struct SinMapDataObservation<'a>(&'a SinMapData);
-impl<'a> SinMapDataObservation<'a> {
-  fn run(&self, idx: u64) -> Option<Array<f64, Ix1>> {
-    Some(arr1(&[self.0.observations[idx as usize]]))
+impl<'a> Observer<f64> for SinMapDataObservation<'a> {
+  fn observe_into(&self, step: u64, mut out: ArrayViewMut<f64, Ix1>) -> bool {
+    out[0] = self.0.observations[step as usize];
+    true
   }
 }
-impl<'a> FnOnce<(u64,)> for SinMapDataObservation<'a> {
-  type Output = Option<Array<f64, Ix1>>;
-  extern "rust-call" fn call_once(self, (i,): (u64,)) -> Self::Output {
-    self.run(i)
-  }
-}
-impl<'a> FnMut<(u64,)> for SinMapDataObservation<'a> {
-  extern "rust-call" fn call_mut(&mut self, (i,): (u64,)) -> Self::Output {
-    self.run(i)
-  }
-}
-impl<'a> Fn<(u64,)> for SinMapDataObservation<'a> {
-  extern "rust-call" fn call(&self, (i,): (u64,)) -> Self::Output {
-    self.run(i)
-  }
-}
-pub type SinMapModel<'a> = Model<f64, SinMapDataModel<'a>, SinMapDataObservation<'a>>;
+pub type SinMapModel<'a> = (ModelStats<SinMapDataModel<'a>>, SinMapDataObservation<'a>);
 impl SinMapData {
   pub fn init(&self) -> EnsembleInit<f64> {
     EnsembleInit {
@@ -177,104 +143,23 @@ impl SinMapData {
 
       gamma: self.gamma.view(),
       sigma: self.sigma.view(),
+      model_workspace_size: 0,
       ensemble_count: self.ensemble_count,
     }
   }
   pub fn model(&self) -> SinMapModel {
-    Model::new(SinMapDataModel(self),
-               SinMapDataObservation(self))
+    (From::from(SinMapDataModel(self)), SinMapDataObservation(self))
   }
 }
 
-pub trait ModelTruth<E> {
-  fn truth(&self) -> ArrayView<E, Ix1>;
-  fn observations(&self) -> ArrayView<E, Ix1>;
-}
+
 impl ModelTruth<f64> for SinMapData {
-  fn truth(&self) -> ArrayView<f64, Ix1> { self.truth.view() }
-  fn observations(&self) -> ArrayView<f64, Ix1> { self.observations.view() }
-}
-
-#[derive(Clone, Debug)]
-pub struct StateSteps {
-  means: Array<f64, Ix2>,
-  covariances: Array<f64, Ix3>,
-  ensembles: Array<f64, Ix3>,
-}
-impl StateSteps {
-  pub fn new(steps: usize, ensemble_count: usize) -> StateSteps {
-    StateSteps {
-      means: ArrayBase::zeros((steps, 1)),
-      covariances: ArrayBase::zeros((steps, 1, 1)),
-      ensembles: ArrayBase::zeros((steps, ensemble_count, 1)),
-    }
+  fn truth(&self) -> ArrayView<f64, Ix2> {
+    extend_dim_ref(&self.truth, false)
   }
-
-  pub fn store_state<WS>(&mut self, step: usize, ws: &WS)
-    where WS: EnsembleWorkspace<f64>,
-  {
-    self.means
-      .subview_mut(Axis(0), step)
-      .assign(&ws.mean_view());
-    self.covariances
-      .subview_mut(Axis(0), step)
-      .assign(&ws.covariance_view());
-    self.ensembles
-      .subview_mut(Axis(0), step)
-      .assign(&ws.ensembles_view());
+  fn observations(&self) -> ArrayView<f64, Ix2> {
+    extend_dim_ref(&self.observations, false)
   }
 }
 
-pub fn make_ensemble_plots<T>(source: &T, states: &StateSteps,
-                              js: u64, what: &str)
-  where T: ModelTruth<f64>,
-{
-  use gnuplot::*;
 
-  let truth = source.truth();
-  let observations = source.observations();
-
-  let means = states.means.view();
-  let covariances = states.covariances.view();
-
-  let js = ::std::cmp::min(means.dim().0 as u64 - 1, js);
-  let js_space = 0..js;
-
-  let mut all = Figure::new();
-  all.set_terminal("wxt", "");
-
-  {
-    let mut axis = all.axes2d();
-    let title = format!("{}, Ex. 1.3", what);
-    axis.set_title(&title[..], &[]);
-    axis.set_x_label("iteration, j", &[]);
-    axis.lines(js_space.clone(), (0..js).map(|i| truth[i as usize] ),
-               &[PlotOption::Caption("truth"),]);
-    axis.lines(js_space.clone(), (0..js).map(|i| means[[i as usize, 0]] ),
-               &[PlotOption::Caption("ensemble mean"),
-                 PlotOption::Color("magenta"),]);
-    axis.lines(js_space.clone(),
-               (0..js).map(|i| {
-                 means[[i as usize, 0]] + covariances[[i as usize, 0, 0]].sqrt()
-               }),
-               &[PlotOption::Caption("error"),
-                 PlotOption::Color("red"),
-                 PlotOption::LineStyle(DashType::Dash)]);
-    axis.points((1..js).map(|i| i as f64 ),
-                (0..js - 1).map(|i| {
-                  observations[i as usize]
-                }),
-                &[PlotOption::Caption("observation"),
-                  PlotOption::Color("black"),
-                  PlotOption::PointSymbol('x'),]);
-    axis.lines(js_space.clone(),
-               (0..js).map(|i| {
-                 means[[i as usize, 0]] - covariances[[i as usize, 0, 0]].sqrt()
-               }),
-               &[PlotOption::Caption("error"),
-                 PlotOption::Color("red"),
-                 PlotOption::LineStyle(DashType::Dash)]);
-  }
-
-  all.show();
-}

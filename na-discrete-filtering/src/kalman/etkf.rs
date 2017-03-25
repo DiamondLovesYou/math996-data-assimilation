@@ -3,19 +3,23 @@ use nd::{Array, ArrayBase, ArrayView, ArrayViewMut, Ix2, Ix1,
          Axis};
 use linxal::types::{LinxalScalar};
 use linxal::solve_linear::general::SolveLinear;
+use linxal::solve_linear::symmetric::SymmetricSolveLinear;
 use num_traits::{NumCast, One, Zero, Float};
 use rand::Rng;
 use rand::distributions::IndependentSample;
 use rand::distributions::normal::Normal;
-use std::marker::PhantomData;
 use std::ops::{Add, Sub, Mul, Div,
                AddAssign, SubAssign,
                DivAssign, MulAssign,};
 
 use {Algorithm, Workspace};
 use utils::CholeskyLDL;
+use rayon::prelude::*;
+use nd_par::prelude::*;
 
-use super::extend_dim_mut;
+use super::{extend_dim_mut, extend_dim_ref, EnsemblePredict,
+            EnsemblePredictModelStuff, EnsembleWorkspace,
+            ResampleForcing,};
 
 pub use super::EnsembleState as State;
 pub use super::EnsembleInit as Init;
@@ -28,6 +32,8 @@ pub struct OwnedWorkspace<E>
   mean: Array<E, Ix1>,
   covariance: Array<E, Ix2>,
   ensembles: Array<E, Ix2>,
+
+  model_workspace: Array<E, Ix2>,
 
   /// d
   innovation: Array<E, Ix1>,
@@ -67,6 +73,7 @@ impl<'a, E> Workspace<Init<'a, E>> for OwnedWorkspace<E>
       initial_covariance,
       observation_operator,
       ensemble_count,
+      model_workspace_size,
       ..
     } = i;
 
@@ -118,7 +125,9 @@ impl<'a, E> Workspace<Init<'a, E>> for OwnedWorkspace<E>
       covariance: c,
       ensembles: ensembles,
 
-      innovation: ArrayBase::zeros(n),
+      model_workspace: Array::zeros((ensemble_count, model_workspace_size)),
+
+      innovation: ArrayBase::zeros(observation_operator.dim().0),
       s: ArrayBase::zeros((observation_operator.dim().0,
                            observation_operator.dim().0)),
       kalman_gain: ArrayBase::zeros((n, observation_operator.dim().0)),
@@ -134,27 +143,51 @@ impl<'a, E> Workspace<Init<'a, E>> for OwnedWorkspace<E>
     }
   }
 }
+impl<E> EnsembleWorkspace<E> for OwnedWorkspace<E>
+  where E: LinxalScalar,
+{
+  fn mean_view(&self) -> ArrayView<E, Ix1> { self.mean.view() }
+  fn covariance_view(&self) -> ArrayView<E, Ix2> { self.covariance.view() }
+  fn ensembles_view(&self) -> ArrayView<E, Ix2> { self.ensembles.view() }
+}
+impl<E> ResampleForcing<E> for OwnedWorkspace<E>
+  where E: LinxalScalar + From<f64>,
+        E: MulAssign<<E as LinxalScalar>::RealPart>,
+{
+  fn forcing_view_mut(&mut self) -> ArrayViewMut<E, Ix2> { self.forcing.view_mut() }
+}
 
+impl<E> EnsemblePredict<E> for OwnedWorkspace<E>
+  where E: LinxalScalar + Send + Sync + AddAssign<E>,
+        ::rayon::par_iter::reduce::SumOp: ::rayon::par_iter::reduce::ReduceOp<E>,
+{
+  fn ensemble_predict_stuff(&mut self) -> EnsemblePredictModelStuff<E> {
+    EnsemblePredictModelStuff {
+      forcing: self.forcing.view(),
+      transpose_ensemble_predict: false,
+      ensemble_predict: self.ensemble_predict.view_mut(),
+      ensembles: self.ensembles.view(),
+      estimator: Some(self.estimator_predict.view_mut()),
+      model_workspace: self.model_workspace.view_mut(),
+    }
+  }
+}
 
-
-pub struct Algo<'a, E, F1, F2>
+pub struct Algo<'a, E>
   where E: LinxalScalar,
 {
   ensemble_count: usize,
   gamma: ArrayView<'a, E::RealPart, Ix1>,
   sigma: ArrayView<'a, E::RealPart, Ix1>,
   observation_operator: ArrayView<'a, E, Ix2>,
-
-  _i: PhantomData<(F1, F2)>,
-  _s: PhantomData<()>,
-  _m: PhantomData<()>,
 }
 
-impl<'init, 'state, F1, F2, E>
-Algorithm for Algo<'init, E, F1, F2>
-  where F1: for<'r, 's> Fn(ArrayView<'r, E, Ix1>, ArrayViewMut<'s, E, Ix1>),
-        F2: FnMut(u64) -> Option<Array<E, Ix1>>,
-        E: LinxalScalar + CholeskyLDL + From<f64> + NumCast + SolveLinear,
+impl<'init, 'state, E, M, Ob> Algorithm<M, Ob> for Algo<'init, E>
+  where M: ::Model<E>,
+        Ob: ::Observer<E>,
+        E: LinxalScalar + CholeskyLDL + From<f64> + NumCast + SolveLinear + SymmetricSolveLinear + Send + Sync,
+        ::rayon::par_iter::reduce::SumOp: ::rayon::par_iter::reduce::ReduceOp<E>,
+        <E as LinxalScalar>::RealPart: Send + Sync,
         E: Add<E, Output = E> + Sub<E, Output = E>,
         E: AddAssign<E> + SubAssign<E>,
         E: Add<<E as LinxalScalar>::RealPart, Output = E> + Sub<<E as LinxalScalar>::RealPart, Output = E>,
@@ -165,11 +198,11 @@ Algorithm for Algo<'init, E, F1, F2>
 {
   type Init  = Init<'init, E>;
   type WS    = OwnedWorkspace<E>;
-  type Model = Model<E, F1, F2>;
 
   fn init(i: &Init<'init, E>,
           _rand: &mut Rng,
-          _model: &mut Model<E, F1, F2>,
+          _model: &mut ::ModelStats<M>,
+          _observer: &Ob,
           _: u64) -> Self
   {
     Algo {
@@ -177,10 +210,6 @@ Algorithm for Algo<'init, E, F1, F2>
       gamma: i.gamma.clone(),
       sigma: i.sigma.clone(),
       observation_operator: i.observation_operator.clone(),
-
-      _i: PhantomData,
-      _s: PhantomData,
-      _m: PhantomData,
     }
   }
 
@@ -190,7 +219,8 @@ Algorithm for Algo<'init, E, F1, F2>
                _total_steps: u64,
                mut rand: &mut Rng,
                workspace: &mut OwnedWorkspace<E>,
-               model: &mut Model<E, F1, F2>)
+               model: &mut ::ModelStats<M>,
+               observer: &Ob)
                -> Result<(), ()>
   {
     use linxal::solve_linear::SolveLinear;
@@ -200,6 +230,7 @@ Algorithm for Algo<'init, E, F1, F2>
     use nd::linalg::general_mat_mul;
 
     let n = workspace.mean.dim();
+    let obs_size = self.observation_operator.dim().0;
     let ec_e: <E as LinxalScalar>::RealPart = NumCast::from(self.ensemble_count).unwrap();
     let s = (ec_e - <E as LinxalScalar>::RealPart::one()).sqrt();
 
@@ -211,34 +242,11 @@ Algorithm for Algo<'init, E, F1, F2>
       .fill(Zero::zero());
     workspace.estimator_predict
       .fill(Zero::zero());
-    {
-      {
-        let mut r = workspace.forcing.view_mut();
-        for i in 0..r.dim().0 {
-          for j in 0..r.dim().1 {
-            r[[i,j]] = From::from(normal.ind_sample(&mut rand));
-            r[[i,j]] *= self.sigma[i];
-          }
-        }
-      }
-      let r = workspace.forcing.view();
-
-      let mut estimator = workspace.estimator_predict.view_mut();
-      for i in 0..self.ensemble_count {
-        let mut ensemble_dest = workspace.ensemble_predict.row_mut(i);
-        (model.model)(workspace.ensembles.row(i).view(),
-                      ensemble_dest.view_mut());
-        model.calls += 1;
-
-        let forcing = r.column(i);
-        for j in 0..n {
-          ensemble_dest[j] += forcing[j];
-
-          estimator[j] += ensemble_dest[j];
-        }
-      }
-      estimator.mapv_inplace(|v| v / ec_e);
-    }
+    workspace.resample_forcing(self.sigma.view(),
+                               normal,
+                               &mut rand);
+    workspace.ensemble_predict(current_step, model);
+    workspace.estimator_predict.mapv_inplace(|v| v / ec_e);
 
     workspace.centered_ensemble
       .fill(Zero::zero());
@@ -266,43 +274,42 @@ Algorithm for Algo<'init, E, F1, F2>
 
       {
         let t = workspace.sqrt_transform.view_mut();
-        let (mut left, _) = t.split_at(Axis(1), n);
+        let (mut left, _) = t.split_at(Axis(1), obs_size);
         let mut left_ext = left.view_mut();
 
         general_mat_mul(One::one(),
-                        &workspace.centered_ensemble.t(),
-                        &self.observation_operator.t(),
+                        &self.observation_operator,
+                        &workspace.centered_ensemble,
                         Zero::zero(),
-                        &mut left_ext);
+                        &mut left_ext.view_mut().reversed_axes());
 
-
-        for i in 0..n {
-          let gamma = self.gamma[i] * self.gamma[i];
-          left_ext.subview_mut(Axis(1), i)
-            .mapv_inplace(|v| v * gamma.recip());
-        }
+        left_ext
+          .axis_iter_mut(Axis(1))
+          .into_par_iter()
+          .zip(self.gamma.axis_iter(Axis(0)).into_par_iter().map(|v| v[()] * v[()] ))
+          .for_each(|(mut l, gamma)| {
+            l.mapv_inplace(|v| v / gamma );
+          });
 
         general_mat_mul(One::one(),
                         &left_ext,
                         &self.observation_operator,
                         Zero::zero(),
-                        &mut z.slice_mut(s![.., ..1]));
+                        &mut z.slice_mut(s![.., ..n as isize]));
       }
 
       {
         let mut t = workspace.sqrt_transform.view_mut();
-        t.fill(Zero::zero());
-        for i in 0..t.dim().0 {
-          t[[i,i]] = One::one();
-        }
-
         general_mat_mul(One::one(),
-                        &z.slice(s![.., ..1]),
+                        &z.slice(s![.., ..n as isize]),
                         &workspace.centered_ensemble,
-                        One::one(),
+                        Zero::zero(),
                         &mut t);
         // copy `t` to `z`.
         z.assign(&t);
+        for i in 0..z.dim().0 {
+          z[[i,i]] += One::one();
+        }
       }
 
       // Now, invert t and then factorize via cholesky
@@ -312,13 +319,19 @@ Algorithm for Algo<'init, E, F1, F2>
         t[[i, i]] = One::one();
       }
       SolveLinear::compute_multi_into(z.view_mut(),
+                                      //Symmetric::Upper,
                                       t.view_mut())
         .expect("inversion failed (singular T_j? -- this is impossible(TM))");
 
       // the inverse is now in `t`. now we upper cholesky factorize `t`:
-      Cholesky::compute_into(t.view_mut(),
-                             Symmetric::Upper)
-        .expect("cholesky factorization failed");
+      match Cholesky::compute_into(t.view_mut(),
+                                   Symmetric::Upper) {
+        Err(e) => {
+          println!("{:?}: t = {:?}", e, t);
+          panic!();
+        },
+        _ => {},
+      }
     }
 
     // consider workspace.sqrt_transform_intermediate to be garbage
@@ -336,19 +349,17 @@ Algorithm for Algo<'init, E, F1, F2>
 
 
     // analyze
-    let observation = (model.next_observation)(current_step);
-    let observation = observation.expect("TODO");
     {
       let mut d = workspace.innovation.view_mut();
-      d.assign(&observation);
-
+      assert!(observer.observe_into(current_step, d.view_mut()));
       let mut d2 = extend_dim_mut(&mut d, false);
 
       let mhat = workspace.estimator_predict.view();
+      let mhat2 = extend_dim_ref(&mhat, false);
       let neg_one = NumCast::from(-1).unwrap();
       general_mat_mul(neg_one,
                       &self.observation_operator,
-                      &mhat.broadcast((mhat.dim(), 1)).unwrap(),
+                      &mhat2,
                       One::one(),
                       &mut d2);
     }
@@ -359,13 +370,13 @@ Algorithm for Algo<'init, E, F1, F2>
       let h = self.observation_operator.view();
 
       general_mat_mul(One::one(),
-                      &chat, &h,
+                      &chat, &h.t(),
                       Zero::zero(),
                       &mut chat_ht);
 
       let mut s = workspace.s.view_mut();
       s.fill(Zero::zero());
-      for i in 0..self.observation_operator.dim().1 {
+      for i in 0..self.observation_operator.dim().0 {
         s[[i,i]] = E::one() * self.gamma[i] * self.gamma[i];
       }
 
@@ -373,8 +384,8 @@ Algorithm for Algo<'init, E, F1, F2>
                       &h, &chat_ht.view(),
                       One::one(),
                       &mut s);
-
-      SolveLinear::compute_multi_into(s, chat_ht)
+      SolveLinear::compute_multi_into(s.view_mut().reversed_axes(),
+                                      chat_ht.view_mut().reversed_axes())
         .expect("analysis solve failed");
     }
 
@@ -383,13 +394,10 @@ Algorithm for Algo<'init, E, F1, F2>
       m.assign(&workspace.estimator_predict);
       let mut m2 = extend_dim_mut(&mut m, false);
       let k = workspace.kalman_gain.view();
-      let d = workspace.innovation
-        .broadcast((workspace.innovation.dim(),
-                    1))
-        .unwrap();
+      let d = workspace.innovation.view();
 
       general_mat_mul(One::one(),
-                      &k, &d,
+                      &k, &extend_dim_ref(&d, false),
                       One::one(),
                       &mut m2);
     }

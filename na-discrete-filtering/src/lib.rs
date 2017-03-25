@@ -4,8 +4,11 @@ extern crate ndarray as nd;
 extern crate linxal;
 extern crate rand;
 extern crate num_traits;
+extern crate rayon;
+extern crate ndarray_parallel as nd_par;
 
 use rand::Rng;
+use nd::{ArrayViewMut, ArrayView, Ix1};
 
 pub mod utils;
 pub mod variational;
@@ -42,14 +45,16 @@ pub trait State<'a, WS> {
   fn current(ws: &'a WS) -> Self;
 }
 
-pub trait Algorithm {
+pub trait Algorithm<M, Ob>
+{
   type Init: Initializer;
   type WS: Workspace<Self::Init>;
-  type Model;
 
+  /// observer should be unused. It's just here for type inference.
   fn init(i: &Self::Init,
           rand: &mut Rng,
-          model: &mut Self::Model,
+          model: &mut ModelStats<M>,
+          _observer: &Ob,
           steps: u64) -> Self;
 
   /// This function shall not allocate.
@@ -58,6 +63,32 @@ pub trait Algorithm {
                total_steps: u64,
                rand: &mut Rng,
                workspace: &mut Self::WS,
-               model: &mut Self::Model)
+               model: &mut ModelStats<M>,
+               observer: &Ob)
                -> Result<(), ()>;
+}
+
+pub trait Model<E>: Send + Sync {
+  fn workspace_size() -> usize;
+  fn run(&self, step: u64,
+         workspace: ArrayViewMut<E, Ix1>,
+         mean: ArrayView<E, Ix1>,
+         out: ArrayViewMut<E, Ix1>);
+}
+#[derive(Debug)]
+pub struct ModelStats<M> {
+  pub model: M,
+  pub calls: u64,
+}
+impl<M> From<M> for ModelStats<M> {
+  fn from(v: M) -> ModelStats<M> {
+    ModelStats {
+      model: v,
+      calls: 0,
+    }
+  }
+}
+
+pub trait Observer<E> {
+  fn observe_into(&self, step: u64, out: ArrayViewMut<E, Ix1>) -> bool;
 }

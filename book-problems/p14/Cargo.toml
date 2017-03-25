@@ -8,15 +8,11 @@ gnuplot = "0.0.22"
 ndarray = "0.8.0"
 num-traits = "0.1.37"
 rand = "0.3.15"
+linxal = "0.5.1"
 
 [dependencies.common]
 optional = false
 path = "../common"
-
-[dependencies.linxal]
-version = "*"
-default-features = false
-features = ["openblas-static"]
 
 [dependencies.na-discrete-filtering]
 optional = false

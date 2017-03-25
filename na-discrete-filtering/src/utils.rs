@@ -1,5 +1,5 @@
 
-use nd::{ArrayBase, Ix1, Ix2, Array, Data,};
+use nd::{ArrayBase, Ix1, Ix2, Array, Data, DataMut, ViewRepr};
 use linxal::factorization::cholesky::*;
 use linxal::types::Symmetric;
 use linxal::types::{c32, c64};
@@ -40,6 +40,39 @@ impl CholeskyLDL for f64 {
 
     Ok((u, d))
   }
+}
+
+pub fn extend_dim_mut<D>(d: &mut ArrayBase<D, Ix1>, t: bool)
+  -> ArrayBase<ViewRepr<&mut D::Elem>, Ix2>
+  where D: DataMut,
+{
+  let d_dim = d.dim();
+  let d_slice = d.as_slice_mut().expect("d_slice");
+  let dim = if !t {
+    (d_dim, 1)
+  } else {
+    (1, d_dim)
+  };
+  let d2 = ArrayBase::<ViewRepr<&mut D::Elem>, _>::from_shape(dim, d_slice)
+    .expect("d2");
+
+  d2
+}
+pub fn extend_dim_ref<D>(d: &ArrayBase<D, Ix1>, t: bool)
+  -> ArrayBase<ViewRepr<&D::Elem>, Ix2>
+  where D: Data,
+{
+  let d_dim = d.dim();
+  let d_slice = d.as_slice().expect("d_slice");
+  let dim = if !t {
+    (d_dim, 1)
+  } else {
+    (1, d_dim)
+  };
+  let d2 = ArrayBase::<ViewRepr<&D::Elem>, _>::from_shape(dim, d_slice)
+    .expect("d2");
+
+  d2
 }
 
 pub trait Sqrt {

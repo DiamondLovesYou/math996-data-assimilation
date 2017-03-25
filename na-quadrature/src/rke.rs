@@ -5,7 +5,7 @@
 //! After taking a look at optimized assembly, this looks terrible. I'll fix it later.
 
 use linxal::types::*;
-use nd::{ArrayBase, ArrayView, ArrayViewMut, Array, Data, DataMut, DataOwned, Ix2, Ix1,
+use nd::{ArrayBase, ArrayView, ArrayViewMut, Array, Data, DataMut, Ix2, Ix1,
          ScalarOperand,};
 use num_traits::*;
 use std::ops::*;
@@ -43,7 +43,7 @@ pub struct State<Elem, ElemReal, S1, S2, S3>
 {
   calls: u64,
   steps: u64,
-  pub previous_h: Elem::RealPart,
+  pub step_size: Option<Elem::RealPart>,
   pub h: Elem::RealPart,
   pub tolerance: Elem::RealPart,
   pub threshold: ArrayBase<S3, Ix1>,
@@ -73,7 +73,7 @@ impl<Elem, ElemReal, S1, S2, S3> State<Elem, ElemReal, S1, S2, S3>
       calls: 0,
       steps: 0,
 
-      previous_h: h,
+      step_size: None,
       h: h,
       tolerance: tol,
       threshold: threshold,
@@ -88,6 +88,8 @@ impl<Elem, ElemReal, S1, S2, S3> State<Elem, ElemReal, S1, S2, S3>
   pub fn y(&self) -> &ArrayBase<S1, Ix1> { &self.y }
   pub fn yp(&self) -> &ArrayBase<S2, Ix1> { &self.yp }
 
+  pub fn step_size_opt(&self) -> Option<ElemReal> { self.step_size }
+  pub fn step_size(&self) -> ElemReal { self.step_size.unwrap() }
   pub fn total_model_calls(&self) -> u64 { self.calls }
   pub fn total_steps(&self) -> u64 { self.steps }
 
@@ -168,8 +170,8 @@ Iterator for InnerIterator<'a, ModelF, Elem, ElemReal, S1, S2, S3>
       self.state.calls += 1;
     }
 
-    fn min<T:PartialOrd>(a:T,b:T)->T { if a<b{a}else{b}}
-    fn max<T:PartialOrd>(a:T,b:T)->T { if a>b{a}else{b}}
+    fn min<T: PartialOrd>(a: T, b: T) -> T { if a<b { a } else { b } }
+    fn max<T: PartialOrd>(a: T, b: T) -> T { if a>b { a } else { b } }
 
     let mut failed = false;
 
@@ -197,8 +199,6 @@ Iterator for InnerIterator<'a, ModelF, Elem, ElemReal, S1, S2, S3>
     let twelveth = twelve.recip();
 
     let tolaim = self.state.tolerance * (four - one) / (six - one);
-
-    self.state.previous_h = self.state.h;
 
     let result = loop {
       let t = self.x() + Elem::from(quat * self.h());
@@ -287,6 +287,7 @@ Iterator for InnerIterator<'a, ModelF, Elem, ElemReal, S1, S2, S3>
         }
       } else {
         self.state.x = self.state.x + self.h();
+        self.state.step_size = Some(self.h());
 
         let x = self.x();
         let k8 = self.feval(x, &y5th);
@@ -393,26 +394,30 @@ SteppingIterator<'a, ModelF, Elem, ElemReal, S1, S2, S3, S4>
                             Result<(usize, Elem, Option<ArrayBase<Vec<Elem>, Ix2>>), ()>)>
     where F1: Fn(Elem) -> bool,
   {
-    let want_ycoeff = self.inner.state.want_ycoeff;
-    self.inner.state.want_ycoeff = false;
-
     let mut quit_next = false;
 
     loop {
-      let h: Elem = From::from(self.inner.state.h);
-      let x = self.inner.state.x();
-      if !end_test(x + h) {
-        self.inner.state.h = (end - x).mag();
-        self.inner.state.want_ycoeff = want_ycoeff;
-
-        quit_next = true;
-      }
-
       match self.inner.next() {
         None => { return None; }
         Some((state, Ok(ycoeff))) => {
+
+          let h: Elem = From::from(self.inner.state.h);
+          let x = self.inner.state.x();
+
           if quit_next {
             return Some((state, Ok((idx, end, ycoeff))));
+          }
+
+          if !end_test(x + h) {
+            let next_step_size = (end - x).mag();
+
+            if next_step_size <= self.inner.state.tolerance {
+              return Some((state, Ok((idx, end, ycoeff))));
+            } else {
+              self.inner.state.h = next_step_size;
+            }
+
+            quit_next = true;
           }
         },
         Some((state, Err(()))) => {
@@ -421,7 +426,6 @@ SteppingIterator<'a, ModelF, Elem, ElemReal, S1, S2, S3, S4>
       }
     }
 
-    unreachable!();
   }
 }
 impl<'a, ModelF, Elem, ElemReal, S1, S2, S3, S4>

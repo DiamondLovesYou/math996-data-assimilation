@@ -4,7 +4,9 @@ name = "na-discrete-filtering"
 version = "0.1.0"
 
 [dependencies]
-linxal = "0.5.0"
+linxal = "0.5.1"
 ndarray = "0.8.0"
+ndarray-parallel = "0.2.0"
 num-traits = "0.1.37"
 rand = "0.3.15"
+rayon = "0.6.0"

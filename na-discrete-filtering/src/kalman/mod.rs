@@ -4,9 +4,15 @@ use rand::distributions::IndependentSample;
 
 use linxal::types::{LinxalScalar};
 use nd::prelude::*;
-use nd::{DataMut, ViewRepr};
+use nd_par::prelude::*;
 
-use std::ops::{AddAssign, MulAssign,};
+use rayon::prelude::*;
+
+use num_traits::Zero;
+
+use std::ops::{AddAssign, MulAssign, Add};
+
+pub use super::utils::{extend_dim_mut, extend_dim_ref};
 
 pub mod etkf;
 pub mod sirs;
@@ -21,6 +27,7 @@ pub struct EnsembleInit<'a, E>
   pub observation_operator: ArrayView<'a, E, Ix2>,
   pub gamma: ArrayView<'a, E::RealPart, Ix1>,
   pub sigma: ArrayView<'a, E::RealPart, Ix1>,
+  pub model_workspace_size: usize,
   pub ensemble_count: usize,
 }
 impl<'a, E> EnsembleInit<'a, E>
@@ -57,7 +64,7 @@ impl<'a, E, WS> ::State<'a, WS> for EnsembleState<'a, E>
 }
 
 pub struct Model<E, F1, F2>
-  where F1: for<'r, 's> Fn(ArrayView<'r, E, Ix1>, ArrayViewMut<'s, E, Ix1>),
+  where F1: for<'r, 's> Fn(u64, ArrayView<'r, E, Ix1>, ArrayViewMut<'s, E, Ix1>),
         F2: FnMut(u64) -> Option<Array<E, Ix1>>,
         E: LinxalScalar,
 {
@@ -70,7 +77,7 @@ pub struct Model<E, F1, F2>
 }
 
 impl<E, F1, F2> Model<E, F1, F2>
-  where F1: for<'r, 's> Fn(ArrayView<'r, E, Ix1>, ArrayViewMut<'s, E, Ix1>),
+  where F1: for<'r, 's> Fn(u64, ArrayView<'r, E, Ix1>, ArrayViewMut<'s, E, Ix1>),
         F2: FnMut(u64) -> Option<Array<E, Ix1>>,
         E: LinxalScalar,
 {
@@ -115,20 +122,23 @@ pub struct EnsemblePredictModelStuff<'a, E>
   pub ensemble_predict: ArrayViewMut<'a, E, Ix2>,
   pub ensembles: ArrayView<'a, E, Ix2>,
   pub estimator: Option<ArrayViewMut<'a, E, Ix1>>,
+  pub model_workspace: ArrayViewMut<'a, E, Ix2>,
 }
 pub trait EnsemblePredict<E>
-  where E: LinxalScalar + AddAssign<E>,
+  where E: LinxalScalar + Send + Sync + AddAssign<E> + Add<E> + Zero,
+        ::rayon::par_iter::reduce::SumOp: ::rayon::par_iter::reduce::ReduceOp<E>,
 {
   fn ensemble_predict_stuff(&mut self) -> EnsemblePredictModelStuff<E>;
 
-  fn ensemble_predict<F1, F2>(&mut self, model: &mut Model<E, F1, F2>)
-    where F1: for<'r, 's> Fn(ArrayView<'r, E, Ix1>, ArrayViewMut<'s, E, Ix1>),
-          F2: FnMut(u64) -> Option<Array<E, Ix1>>,
+  fn ensemble_predict<M>(&mut self, step: u64,
+                         model: &mut ::ModelStats<M>)
+    where M: ::Model<E>,
   {
     let EnsemblePredictModelStuff {
       forcing, mut ensemble_predict,
       ensembles, mut estimator,
       transpose_ensemble_predict,
+      mut model_workspace,
     } = self.ensemble_predict_stuff();
 
     let n = if transpose_ensemble_predict {
@@ -137,43 +147,57 @@ pub trait EnsemblePredict<E>
       ensemble_predict.dim().0
     };
     assert_eq!(n, forcing.dim().1);
+    assert_eq!(model_workspace.dim().0, ensembles.dim().0);
 
-    for i in 0..n {
-      let mut ensemble_dest = if transpose_ensemble_predict {
-        ensemble_predict.column_mut(i)
-      } else {
-        ensemble_predict.row_mut(i)
-      };
-      (model.model)(ensembles.row(i).view(),
-                    ensemble_dest.view_mut());
-      model.calls += 1;
+    let outer_axis = if transpose_ensemble_predict {
+      Axis(1)
+    } else {
+      Axis(0)
+    };
 
-      let forcing = forcing.column(i);
-      assert_eq!(ensemble_dest.dim(), forcing.dim());
-      for j in 0..ensemble_dest.dim() {
-        ensemble_dest[j] += forcing[j];
+    let predict_iter = ensemble_predict
+      .axis_iter_mut(outer_axis)
+      .into_par_iter();
+    let iter = ensembles.axis_iter(Axis(0))
+      .into_par_iter()
+      .zip(model_workspace.axis_iter_mut(Axis(0)).into_par_iter())
+      .zip(predict_iter)
+      .zip(forcing.axis_iter(Axis(1)).into_par_iter());
 
-        if let Some(ref mut estimator) = estimator {
-          estimator[j] += ensemble_dest[j];
-        }
-      }
+    if let Some(ref mut estimator) = estimator {
+      iter
+        .zip(estimator.axis_iter_mut(Axis(0)).into_par_iter())
+        .map(|((((ensemble, model_ws), out), forcing), estimator)| (ensemble, model_ws, out, forcing, estimator) )
+        .for_each(|(ensemble, model_ws, mut out, forcing, mut estimator)| {
+          model.model.run(step, model_ws, ensemble, out.view_mut());
+
+          out.axis_iter_mut(Axis(0))
+            .into_par_iter()
+            .zip(forcing.axis_iter(Axis(0)).into_par_iter())
+            .for_each(|(mut out, forcing)| {
+              out[()] += forcing[()];
+            });
+
+          estimator[()] = out.as_slice().unwrap()
+            .into_par_iter()
+            .map(|&v| v )
+            .sum()
+        })
+    } else {
+      iter
+        .map(|(((ensemble, model_ws), out), forcing)| (ensemble, model_ws, out, forcing) )
+        .for_each(|(ensemble, model_ws, mut out, forcing)| {
+          model.model.run(step, model_ws, ensemble, out.view_mut());
+
+          out.axis_iter_mut(Axis(0))
+            .into_par_iter()
+            .zip(forcing.axis_iter(Axis(0)).into_par_iter())
+            .for_each(|(mut out, forcing)| {
+              out[()] += forcing[()];
+            })
+        });
     }
+
+    model.calls += n as u64;
   }
-}
-
-pub fn extend_dim_mut<D>(d: &mut ArrayBase<D, Ix1>, t: bool)
-                         -> ArrayBase<ViewRepr<&mut D::Elem>, Ix2>
-  where D: DataMut,
-{
-  let d_dim = d.dim();
-  let d_slice = d.as_slice_mut().expect("d_slice");
-  let dim = if !t {
-    (d_dim, 1)
-  } else {
-    (1, d_dim)
-  };
-  let d2 = ArrayBase::<ViewRepr<&mut D::Elem>, _>::from_shape(dim, d_slice)
-    .expect("d2");
-
-  d2
 }

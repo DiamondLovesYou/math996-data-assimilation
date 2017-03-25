@@ -1,17 +1,22 @@
 [package]
 authors = ["Richard Diamond <wichard@vitalitystudios.com>"]
-name = "common"
+name = "sixty-three"
 version = "0.1.0"
 
 [dependencies]
 gnuplot = "0.0.22"
 ndarray = "0.8.0"
-num-traits = "0.1.37"
+ndarray-parallel = "0.2.0"
+ndarray-rand = "0.4.0"
 rand = "0.3.15"
 
 [dependencies.na-discrete-filtering]
 optional = false
 path = "../../na-discrete-filtering"
+
+[dependencies.na-quadrature]
+optional = false
+path = "../../na-quadrature"
 
 [dependencies.plot-helper]
 optional = false
