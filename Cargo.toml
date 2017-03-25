@@ -2,8 +2,17 @@
 
 [workspace]
 members = ["na-quadrature", "na-discrete-filtering",
+           "util", "plot-helper",
+
+           "lorenz-problems/sixty-three",
+
            "book-problems/common",
-           "book-problems/p13", "book-problems/p14"]
+           "book-problems/p13",
+           "book-problems/p14",
+           "book-problems/p15"]
 
 [replace]
-"linxal:0.5.0" = { git = "https://github.com/DiamondLovesYou/linxal.git", branch = "merged-prs", default-features = false, features = ["openblas-static"] }
+"linxal:0.5.2" = { git = "https://github.com/DiamondLovesYou/linxal.git", branch = "merged-prs", default-features = false, features = ["openblas-system"] }
+
+[profile.release]
+debug = true
