@@ -24,7 +24,7 @@ use na_df::kalman::{EnsembleInit};
 
 use nd_par::prelude::*;
 
-const STEPS: usize = 5000;
+const STEPS: usize = 500;
 const RNG_SEED: [u64; 1] = [1];
 const TOL: f64 = 0.000000005;
 const TAU: f64 = 0.0004;
