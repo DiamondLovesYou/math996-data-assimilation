@@ -4,6 +4,7 @@ extern crate ndarray as nd;
 extern crate linxal;
 extern crate rand;
 extern crate num_traits;
+extern crate num_complex;
 extern crate rayon;
 extern crate ndarray_parallel as nd_par;
 

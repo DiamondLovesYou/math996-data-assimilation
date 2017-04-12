@@ -1,10 +1,15 @@
 
 use nd::{Array, ArrayBase, ArrayView, ArrayViewMut, Ix2, Ix1,
          Axis};
+use nd::linalg::general_mat_mul;
+
 use linxal::types::{LinxalScalar};
 use linxal::solve_linear::general::SolveLinear;
 use linxal::solve_linear::symmetric::SymmetricSolveLinear;
+use linxal::eigenvalues::general::Eigen;
+use linxal::eigenvalues::types::Solution;
 use num_traits::{NumCast, One, Zero, Float};
+use num_complex::Complex;
 use rand::Rng;
 use rand::distributions::IndependentSample;
 use rand::distributions::normal::Normal;
@@ -56,7 +61,8 @@ pub struct OwnedWorkspace<E>
   transformed_centered_ensemble: Array<E, Ix2>,
 }
 impl<'a, E> Workspace<Init<'a, E>> for OwnedWorkspace<E>
-  where E: LinxalScalar + CholeskyLDL + From<f64> + NumCast + SolveLinear,
+  where E: LinxalScalar + From<f64> + NumCast + SolveLinear + Eigen,
+        <E as Eigen>::Solution: SolutionHelper<E, Complex<<E as LinxalScalar>::RealPart>>,
         E: Add<E, Output = E> + Sub<E, Output = E>,
         E: AddAssign<E> + SubAssign<E>,
         E: Add<<E as LinxalScalar>::RealPart, Output = E> + Sub<<E as LinxalScalar>::RealPart, Output = E>,
@@ -88,13 +94,10 @@ impl<'a, E> Workspace<Init<'a, E>> for OwnedWorkspace<E>
 
     let mut ensembles = ArrayBase::zeros((ensemble_count, n));
 
-    let (_, d) = CholeskyLDL::compute(&initial_covariance, Symmetric::Lower)
-      .expect("cholesky factorization failed");
-
-    let d: Vec<E> = d.into_raw_vec();
-    let scale: E = d.into_iter()
-      .filter(|v| !v.is_zero() )
-      .fold(E::one(), |p, v| p * v.mag() );
+    let sol = Eigen::compute_into(initial_covariance.to_owned(),
+                                  false, false)
+      .expect("can't eigendecomp initial_covariance");
+    let d = sol.values();
 
     {
       let mut first = ensembles.view_mut();
@@ -103,14 +106,14 @@ impl<'a, E> Workspace<Init<'a, E>> for OwnedWorkspace<E>
         for i in 0..ensemble_count {
           for j in 0..n {
             r[[i,j]] = From::from(normal.ind_sample(&mut rand));
+            r[[i,j]] *= d[j].re;
           }
         }
 
         r
       };
-      r.mapv_inplace(|v| v * scale);
-      let t = &initial_mean.broadcast((ensemble_count, n)).unwrap() + &r;
-      first.assign(&t);
+      first.assign(&initial_mean.broadcast((ensemble_count, n)).unwrap());
+      first.scaled_add(One::one(), &r);
     }
 
     let ec_e: E = NumCast::from(ensemble_count).unwrap();
@@ -182,10 +185,30 @@ pub struct Algo<'a, E>
   observation_operator: ArrayView<'a, E, Ix2>,
 }
 
+pub trait SolutionHelper<EV, IV> {
+  fn values(self) -> Array<IV, Ix1>;
+  fn values_and_left_vectors(&mut self) -> (ArrayViewMut<IV, Ix1>, ArrayView<EV, Ix2>);
+}
+
+impl<T> SolutionHelper<T, Complex<<T as LinxalScalar>::RealPart>> for Solution<T, Complex<<T as LinxalScalar>::RealPart>>
+  where T: Float + LinxalScalar,
+{
+  fn values(self) -> Array<Complex<<T as LinxalScalar>::RealPart>, Ix1> {
+    let Solution {
+      values, ..
+    } = self;
+    values
+  }
+  fn values_and_left_vectors(&mut self) -> (ArrayViewMut<Complex<<T as LinxalScalar>::RealPart>, Ix1>, ArrayView<T, Ix2>) {
+    (self.values.view_mut(), self.left_vectors.as_ref().unwrap().view())
+  }
+}
+
 impl<'init, 'state, E, M, Ob> Algorithm<M, Ob> for Algo<'init, E>
   where M: ::Model<E>,
         Ob: ::Observer<E>,
-        E: LinxalScalar + CholeskyLDL + From<f64> + NumCast + SolveLinear + SymmetricSolveLinear + Send + Sync,
+        E: LinxalScalar + CholeskyLDL + From<f64> + NumCast + SolveLinear + SymmetricSolveLinear + Send + Sync + Eigen + Float,
+        <E as Eigen>::Solution: SolutionHelper<E, Complex<<E as LinxalScalar>::RealPart>>,
         ::rayon::par_iter::reduce::SumOp: ::rayon::par_iter::reduce::ReduceOp<E>,
         <E as LinxalScalar>::RealPart: Send + Sync,
         E: Add<E, Output = E> + Sub<E, Output = E>,
@@ -224,10 +247,6 @@ impl<'init, 'state, E, M, Ob> Algorithm<M, Ob> for Algo<'init, E>
                -> Result<(), ()>
   {
     use linxal::solve_linear::SolveLinear;
-    use linxal::factorization::cholesky::*;
-    use linxal::types::Symmetric;
-
-    use nd::linalg::general_mat_mul;
 
     let n = workspace.mean.dim();
     let obs_size = self.observation_operator.dim().0;
@@ -257,7 +276,7 @@ impl<'init, 'state, E, M, Ob> Algorithm<M, Ob> for Algo<'init, E>
       let mut dest = workspace.centered_ensemble.column_mut(i);
       dest.assign(&ensemble);
       dest -= &estimator;
-      dest.mapv_inplace(|v| v / s );
+      dest.mapv_inplace(|v| v / s);
     }
 
     {
@@ -286,9 +305,9 @@ impl<'init, 'state, E, M, Ob> Algorithm<M, Ob> for Algo<'init, E>
         left_ext
           .axis_iter_mut(Axis(1))
           .into_par_iter()
-          .zip(self.gamma.axis_iter(Axis(0)).into_par_iter().map(|v| v[()] * v[()] ))
+          .zip(self.gamma.axis_iter(Axis(0)).into_par_iter().map(|v| v[()] * v[()]))
           .for_each(|(mut l, gamma)| {
-            l.mapv_inplace(|v| v / gamma );
+            l.mapv_inplace(|v| v / gamma);
           });
 
         general_mat_mul(One::one(),
@@ -308,31 +327,47 @@ impl<'init, 'state, E, M, Ob> Algorithm<M, Ob> for Algo<'init, E>
         // copy `t` to `z`.
         z.assign(&t);
         for i in 0..z.dim().0 {
-          z[[i,i]] += One::one();
+          z[[i, i]] += One::one();
         }
-      }
+        // Now, invert t and then find the eigenvalues.
+        t.fill(Zero::zero());
+        for i in 0..self.ensemble_count {
+          t[[i, i]] = One::one();
+        }
+        SolveLinear::compute_multi_into(z.view_mut(),
+                                        t.view_mut())
+          .expect("inversion failed (singular T_j? -- this is impossible(TM))");
 
-      // Now, invert t and then factorize via cholesky
-      let mut t = workspace.sqrt_transform.view_mut();
-      t.fill(Zero::zero());
-      for i in 0..self.ensemble_count {
-        t[[i, i]] = One::one();
-      }
-      SolveLinear::compute_multi_into(z.view_mut(),
-                                      //Symmetric::Upper,
-                                      t.view_mut())
-        .expect("inversion failed (singular T_j? -- this is impossible(TM))");
-
-      // the inverse is now in `t`. now we upper cholesky factorize `t`:
-      match Cholesky::compute_into(t.view_mut(),
-                                   Symmetric::Upper) {
-        Err(e) => {
-          println!("{:?}: t = {:?}", e, t);
-          panic!();
-        },
-        _ => {},
+        let mut sol = Eigen::compute_into(t.to_owned(),
+                                          true, false)
+          .expect("can't eigendecomp");
+        let (d, v) = sol.values_and_left_vectors();
+        //println!("step = {}, eigenvalues = {:?}", current_step, d);
+        let d = d.map(|v| {
+          if v.re < Zero::zero() {
+            Zero::zero()
+          } else {
+            v.re
+          }
+        });
+        t.fill(Zero::zero());
+        t.axis_iter_mut(Axis(1))
+          .into_par_iter()
+          .zip(v.axis_iter(Axis(1)).into_par_iter())
+          .zip(d.axis_iter(Axis(0)).into_par_iter())
+          .for_each(|((mut t, v), lambda)| {
+            t.assign(&v);
+            t.mapv_inplace(|s| {
+              if !lambda[()].is_zero() {
+                s / lambda[()]
+              } else {
+                Zero::zero()
+              }
+            });
+          });
       }
     }
+
 
     // consider workspace.sqrt_transform_intermediate to be garbage
     // from here on.
@@ -346,7 +381,6 @@ impl<'init, 'state, E, M, Ob> Algorithm<M, Ob> for Algo<'init, E>
                       Zero::zero(),
                       &mut t);
     }
-
 
     // analyze
     {
@@ -377,7 +411,7 @@ impl<'init, 'state, E, M, Ob> Algorithm<M, Ob> for Algo<'init, E>
       let mut s = workspace.s.view_mut();
       s.fill(Zero::zero());
       for i in 0..self.observation_operator.dim().0 {
-        s[[i,i]] = E::one() * self.gamma[i] * self.gamma[i];
+        s[[i, i]] = E::one() * self.gamma[i] * self.gamma[i];
       }
 
       general_mat_mul(One::one(),
