@@ -19,7 +19,7 @@ use util::{StateSteps};
 use util::data::generate_model_truth_and_observation;
 
 use na_df::{Algorithm, Workspace, Model};
-use na_df::kalman::sirs;
+use na_df::kalman::{sirs, etkf};
 use na_df::kalman::{EnsembleInit};
 
 use nd_par::prelude::*;
@@ -146,9 +146,10 @@ fn main() {
 
   let mut states = StateSteps::new(STEPS + 1, init.ensemble_count, 3);
 
-  /*let algo = Algo::init(&init, &mut rand, &mut model, STEPS as u64);
-  let mut workspace: OwnedWorkspace<_> =
-    OwnedWorkspace::alloc(init, &mut rand, STEPS as u64);
+  /*let algo = etkf::Algo::init(&init, &mut rand, &mut model,
+                              &observer, STEPS as u64);
+  let mut workspace: etkf::OwnedWorkspace<_> =
+    etkf::OwnedWorkspace::alloc(init, &mut rand, STEPS as u64);
   states.store_state(0, &workspace);*/
 
   let algo = sirs::std::Algo::init(&init,
@@ -180,6 +181,9 @@ fn main() {
       println!("{:?}", v);
     }
   }
+
+  let current_exe = ::std::env::current_exe().unwrap();
+  let out_dir = current_exe.parent().unwrap().join("../../graphs");
 
   let av = |idx: usize| { states.means.subview(Axis(1), idx) };
   let x = av(0); let xi = x.indexed_iter();
@@ -250,7 +254,9 @@ fn main() {
   };
 
   let mut f = gnuplot::Figure::new();
-  f.set_terminal("wxt", "");
+  f.set_terminal("pngcairo",
+                 format!("{}/sixty-three-sirs-1.png",
+                         out_dir.display()).as_str());
   {
     let mut a = f.axes3d();
 
@@ -279,7 +285,9 @@ fn main() {
   f.show();
 
   let mut f = gnuplot::Figure::new();
-  f.set_terminal("wxt", "");
+  f.set_terminal("pngcairo",
+                 format!("{}/sixty-three-sirs-2.png",
+                         out_dir.display()).as_str());
   {
     let mut a = f.axes2d();
     a.lines(data.x.iter(), y,
@@ -304,7 +312,9 @@ fn main() {
   f.show();
 
   let mut f = gnuplot::Figure::new();
-  f.set_terminal("wxt", "");
+  f.set_terminal("pngcairo",
+                 format!("{}/sixty-three-sirs-3.png",
+                         out_dir.display()).as_str());
   {
     let mut a = f.axes2d();
     let traces: Vec<_> = states.covariances
