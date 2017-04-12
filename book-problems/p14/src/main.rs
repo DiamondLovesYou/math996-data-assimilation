@@ -47,6 +47,6 @@ fn main() {
     states.store_state(i as usize + 1, &workspace);
   }
 
-  make_ensemble_plots(&data, &states, 21,
+  make_ensemble_plots(&data, &states, 51,
                       "Particle Filter (Standard)");
 }

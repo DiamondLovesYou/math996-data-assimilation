@@ -7,7 +7,6 @@ use linxal::types::{LinxalScalar};
 use linxal::solve_linear::general::SolveLinear;
 use linxal::solve_linear::symmetric::SymmetricSolveLinear;
 use linxal::eigenvalues::general::Eigen;
-use linxal::eigenvalues::types::Solution;
 use num_traits::{NumCast, One, Zero, Float};
 use num_complex::Complex;
 use rand::Rng;
@@ -18,7 +17,7 @@ use std::ops::{Add, Sub, Mul, Div,
                DivAssign, MulAssign,};
 
 use {Algorithm, Workspace};
-use utils::CholeskyLDL;
+use utils::{SolutionHelper};
 use rayon::prelude::*;
 use nd_par::prelude::*;
 
@@ -72,8 +71,6 @@ impl<'a, E> Workspace<Init<'a, E>> for OwnedWorkspace<E>
         E: MulAssign<<E as LinxalScalar>::RealPart> + DivAssign<<E as LinxalScalar>::RealPart>,
 {
   fn alloc(i: Init<'a, E>, mut rand: &mut Rng, _: u64) -> OwnedWorkspace<E> {
-    use linxal::types::Symmetric;
-
     let Init {
       initial_mean,
       initial_covariance,
@@ -97,16 +94,16 @@ impl<'a, E> Workspace<Init<'a, E>> for OwnedWorkspace<E>
     let sol = Eigen::compute_into(initial_covariance.to_owned(),
                                   false, false)
       .expect("can't eigendecomp initial_covariance");
-    let d = sol.values();
+    let d = sol.values().map(|v| v.re.sqrt() );
 
     {
       let mut first = ensembles.view_mut();
-      let mut r = {
+      let r = {
         let mut r: Array<E, Ix2> = ArrayBase::zeros((ensemble_count, n));
         for i in 0..ensemble_count {
           for j in 0..n {
             r[[i,j]] = From::from(normal.ind_sample(&mut rand));
-            r[[i,j]] *= d[j].re;
+            r[[i,j]] *= d[j];
           }
         }
 
@@ -185,29 +182,10 @@ pub struct Algo<'a, E>
   observation_operator: ArrayView<'a, E, Ix2>,
 }
 
-pub trait SolutionHelper<EV, IV> {
-  fn values(self) -> Array<IV, Ix1>;
-  fn values_and_left_vectors(&mut self) -> (ArrayViewMut<IV, Ix1>, ArrayView<EV, Ix2>);
-}
-
-impl<T> SolutionHelper<T, Complex<<T as LinxalScalar>::RealPart>> for Solution<T, Complex<<T as LinxalScalar>::RealPart>>
-  where T: Float + LinxalScalar,
-{
-  fn values(self) -> Array<Complex<<T as LinxalScalar>::RealPart>, Ix1> {
-    let Solution {
-      values, ..
-    } = self;
-    values
-  }
-  fn values_and_left_vectors(&mut self) -> (ArrayViewMut<Complex<<T as LinxalScalar>::RealPart>, Ix1>, ArrayView<T, Ix2>) {
-    (self.values.view_mut(), self.left_vectors.as_ref().unwrap().view())
-  }
-}
-
 impl<'init, 'state, E, M, Ob> Algorithm<M, Ob> for Algo<'init, E>
   where M: ::Model<E>,
         Ob: ::Observer<E>,
-        E: LinxalScalar + CholeskyLDL + From<f64> + NumCast + SolveLinear + SymmetricSolveLinear + Send + Sync + Eigen + Float,
+        E: LinxalScalar + From<f64> + NumCast + SolveLinear + SymmetricSolveLinear + Send + Sync + Eigen + Float,
         <E as Eigen>::Solution: SolutionHelper<E, Complex<<E as LinxalScalar>::RealPart>>,
         ::rayon::par_iter::reduce::SumOp: ::rayon::par_iter::reduce::ReduceOp<E>,
         <E as LinxalScalar>::RealPart: Send + Sync,
@@ -347,7 +325,7 @@ impl<'init, 'state, E, M, Ob> Algorithm<M, Ob> for Algo<'init, E>
           if v.re < Zero::zero() {
             Zero::zero()
           } else {
-            v.re
+            v.re.sqrt()
           }
         });
         t.fill(Zero::zero());

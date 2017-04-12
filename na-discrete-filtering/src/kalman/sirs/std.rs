@@ -2,8 +2,10 @@
 use nd::{Array, ArrayBase, ArrayView, ArrayViewMut, Ix2, Ix1,
          Axis};
 use linxal::types::{LinxalScalar};
+use linxal::eigenvalues::Eigen;
 use linxal::solve_linear::general::SolveLinear;
 use num_traits::{NumCast, One, Zero, Float};
+use num_complex::Complex;
 use rand::Rng;
 use rand::distributions::IndependentSample;
 use rand::distributions::normal::Normal;
@@ -12,7 +14,7 @@ use std::ops::{Add, Sub, Mul, Div,
                DivAssign, MulAssign,};
 
 use {Algorithm};
-use utils::{CholeskyLDL, Sqrt, Exp};
+use utils::{Sqrt, Exp, SolutionHelper};
 use rayon::prelude::*;
 use nd_par::prelude::*;
 
@@ -42,7 +44,8 @@ pub struct Workspace<E>
 }
 
 impl<'a, E> ::Workspace<Init<'a, E>> for Workspace<E>
-  where E: LinxalScalar + CholeskyLDL + From<f64> + NumCast + SolveLinear,
+  where E: LinxalScalar + From<f64> + NumCast + SolveLinear + Eigen,
+        <E as Eigen>::Solution: SolutionHelper<E, Complex<<E as LinxalScalar>::RealPart>>,
         E: Send + Sync,
         E: Add<E, Output = E> + Sub<E, Output = E>,
         E: AddAssign<E> + SubAssign<E>,
@@ -53,8 +56,6 @@ impl<'a, E> ::Workspace<Init<'a, E>> for Workspace<E>
         E: MulAssign<<E as LinxalScalar>::RealPart> + DivAssign<<E as LinxalScalar>::RealPart>,
 {
   fn alloc(i: Init<'a, E>, mut rand: &mut Rng, _: u64) -> Workspace<E> {
-    use linxal::types::Symmetric;
-
     let Init {
       initial_mean,
       initial_covariance,
@@ -75,14 +76,10 @@ impl<'a, E> ::Workspace<Init<'a, E>> for Workspace<E>
 
     let mut ensembles = ArrayBase::zeros((ensemble_count, n));
 
-    let (_, d) = CholeskyLDL::compute(&initial_covariance,
-                                      Symmetric::Lower)
-      .expect("cholesky factorization failed");
-
-    let d: Vec<E> = d.into_raw_vec();
-    let scale: E = d.into_iter()
-      .filter(|v| !v.is_zero() )
-      .fold(E::one(), |p, v| p * v.mag() );
+    let sol = Eigen::compute_into(initial_covariance.to_owned(),
+                                  false, false)
+      .expect("can't eigendecomp initial_covariance");
+    let d = sol.values().map(|v| v.re.sqrt() );
 
     {
       let mut first = ensembles.view_mut();
@@ -91,14 +88,14 @@ impl<'a, E> ::Workspace<Init<'a, E>> for Workspace<E>
         for i in 0..ensemble_count {
           for j in 0..n {
             r[[i,j]] = From::from(normal.ind_sample(&mut rand));
+            r[[i,j]] *= d[j];
           }
         }
 
         r
       };
-      first.assign(&initial_mean.broadcast((ensemble_count,
-                                            n)).unwrap());
-      first.scaled_add(scale, &r);
+      first.assign(&initial_mean.broadcast((ensemble_count, n)).unwrap());
+      first.scaled_add(One::one(), &r);
     }
 
     let ec_e: E = NumCast::from(ensemble_count).unwrap();
@@ -168,7 +165,8 @@ impl<'init, 'state, E, M, Ob>
 Algorithm<M, Ob> for Algo<'init, E>
   where M: ::Model<E>,
         Ob: ::Observer<E> + Send + Sync,
-        E: LinxalScalar + CholeskyLDL + From<f64> + PartialOrd,
+        E: LinxalScalar + From<f64> + PartialOrd + Eigen,
+        <E as Eigen>::Solution: SolutionHelper<E, Complex<<E as LinxalScalar>::RealPart>>,
         ::rayon::par_iter::reduce::SumOp: ::rayon::par_iter::reduce::ReduceOp<E>,
         E: NumCast + SolveLinear + Exp + Sqrt + ::rand::Rand,
         E: Send + Sync,
