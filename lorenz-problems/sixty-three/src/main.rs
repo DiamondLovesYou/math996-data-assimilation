@@ -57,7 +57,8 @@ fn main() {
 
   let x = normal.ind_sample(&mut rand);
   let x = x..(x + STEPS as f64 * TAU);
-  let y: Array<f64, Ix1> = Array::random_using(3, normal, &mut rand);
+  //let y: Array<f64, Ix1> = Array::random_using(3, normal, &mut rand);
+  let y = arr1(&[1.0, 1.0, 1.0]);
   let yp = Array::zeros(3);
   let thresh = arr1(&(THRESH)[..]);
   let data = generate_model_truth_and_observation(lorenz63,
