@@ -11,9 +11,9 @@ use num_traits::*;
 use std::ops::*;
 use rand::distributions::range::SampleRange;
 
-pub trait BoundsHelper: LinxalScalar + Float + NumCast + From<f32> + SampleRange + ScalarOperand {}
+pub trait BoundsHelper: LinxalImplScalar + Float + NumCast + From<f32> + SampleRange + ScalarOperand {}
 impl<T> BoundsHelper for T
-  where T: LinxalScalar + Float + NumCast + From<f32> + SampleRange + ScalarOperand
+  where T: LinxalImplScalar + Float + NumCast + From<f32> + SampleRange + ScalarOperand
 {}
 
 pub fn new<Elem, ElemReal,
@@ -28,7 +28,7 @@ pub fn new<Elem, ElemReal,
   where S1: DataMut<Elem = Elem>,
         S2: DataMut<Elem = Elem>,
         S3: Data<Elem = Elem::RealPart>,
-        Elem: LinxalScalar<RealPart = ElemReal> + From<ElemReal>,
+        Elem: LinxalImplScalar<RealPart = ElemReal> + From<ElemReal>,
         ElemReal: BoundsHelper,
 {
   State::new(x, y, yp, h, tol, threshold, want_ycoeff)
@@ -38,7 +38,7 @@ pub struct State<Elem, ElemReal, S1, S2, S3>
   where S1: DataMut<Elem = Elem>,
         S2: DataMut<Elem = Elem>,
         S3: Data<Elem = ElemReal>,
-        Elem: LinxalScalar<RealPart = ElemReal>,
+        Elem: LinxalImplScalar<RealPart = ElemReal>,
         ElemReal: BoundsHelper,
 {
   calls: u64,
@@ -58,7 +58,7 @@ impl<Elem, ElemReal, S1, S2, S3> State<Elem, ElemReal, S1, S2, S3>
   where S1: DataMut<Elem = Elem>,
         S2: DataMut<Elem = Elem>,
         S3: Data<Elem = Elem::RealPart>,
-        Elem: LinxalScalar<RealPart = ElemReal>,
+        Elem: LinxalImplScalar<RealPart = ElemReal>,
         ElemReal: BoundsHelper,
 {
   pub fn new(x: Elem,
@@ -107,7 +107,7 @@ pub struct InnerIterator<'a, ModelF, Elem, ElemReal, S1, S2, S3>
         S1: DataMut<Elem = Elem> + 'a,
         S2: DataMut<Elem = Elem> + 'a,
         S3: Data<Elem = Elem::RealPart> + 'a,
-        Elem: LinxalScalar<RealPart = ElemReal>,
+        Elem: LinxalImplScalar<RealPart = ElemReal>,
         ElemReal: BoundsHelper,
 {
   pub model: ModelF,
@@ -119,7 +119,7 @@ InnerIterator<'a, ModelF, Elem, ElemReal, S1, S2, S3>
         S1: DataMut<Elem = Elem>,
         S2: DataMut<Elem = Elem>,
         S3: Data<Elem = Elem::RealPart>,
-        Elem: LinxalScalar<RealPart = ElemReal> + PartialOrd,
+        Elem: LinxalImplScalar<RealPart = ElemReal> + PartialOrd,
         ElemReal: BoundsHelper,
 {
   fn feval<S4>(&mut self, x: Elem, y: &ArrayBase<S4, Ix1>) -> Array<Elem, Ix1>
@@ -153,7 +153,7 @@ Iterator for InnerIterator<'a, ModelF, Elem, ElemReal, S1, S2, S3>
         S1: DataMut<Elem = Elem>,
         S2: DataMut<Elem = Elem>,
         S3: Data<Elem = Elem::RealPart>,
-        Elem: LinxalScalar<RealPart = ElemReal> + From<ElemReal> + PartialOrd,
+        Elem: LinxalImplScalar<RealPart = ElemReal> + From<ElemReal> + PartialOrd,
         Elem: Mul<ElemReal, Output = Elem> + Add<ElemReal, Output = Elem>,
         Elem: Mul<Elem, Output = Elem> + Add<Elem, Output = Elem>,
         Elem: Div<ElemReal, Output = Elem> + Sub<ElemReal, Output = Elem>,
@@ -161,7 +161,7 @@ Iterator for InnerIterator<'a, ModelF, Elem, ElemReal, S1, S2, S3>
         ElemReal: BoundsHelper,
 {
   type Item = (&'a mut &'a mut State<Elem, ElemReal, S1, S2, S3>,
-               Result<Option<ArrayBase<Vec<Elem>, Ix2>>, ()>);
+               Result<Option<Array<Elem, Ix2>>, ()>);
   fn next(&mut self) -> Option<Self::Item>
   {
     if self.state.steps == 0 {
@@ -293,7 +293,7 @@ Iterator for InnerIterator<'a, ModelF, Elem, ElemReal, S1, S2, S3>
         let k8 = self.feval(x, &y5th);
 
         let result = if self.state.want_ycoeff {
-          let mut ycoeff: ArrayBase<Vec<Elem>, Ix2>;
+          let mut ycoeff: Array<Elem, Ix2>;
           ycoeff = ArrayBase::zeros((self.y().len(), 6));
 
           let alpha = (self.yp() - &k8) * self.h();
@@ -345,7 +345,7 @@ pub struct SteppingIterator<'a, ModelF, Elem, ElemReal, S1, S2, S3, S4>
         S2: DataMut<Elem = Elem> + 'a,
         S3: Data<Elem = Elem::RealPart> + 'a,
         S4: Data<Elem = Elem>,
-        Elem: LinxalScalar<RealPart = ElemReal>,
+        Elem: LinxalImplScalar<RealPart = ElemReal>,
         ElemReal: BoundsHelper,
 {
   x: ArrayBase<S4, Ix1>,
@@ -358,7 +358,7 @@ impl<'a, ModelF, Elem, ElemReal, S1, S2, S3, S4> SteppingIterator<'a, ModelF, El
         S2: DataMut<Elem = Elem>,
         S3: Data<Elem = Elem::RealPart>,
         S4: Data<Elem = Elem>,
-        Elem: LinxalScalar<RealPart = ElemReal> + PartialOrd,
+        Elem: LinxalImplScalar<RealPart = ElemReal> + PartialOrd,
         ElemReal: BoundsHelper,
 {
   pub fn new_inner(inner: InnerIterator<'a, ModelF, Elem, ElemReal, S1, S2, S3>,
@@ -382,7 +382,7 @@ SteppingIterator<'a, ModelF, Elem, ElemReal, S1, S2, S3, S4>
         S2: DataMut<Elem = Elem>,
         S3: Data<Elem = Elem::RealPart>,
         S4: Data<Elem = Elem>,
-        Elem: LinxalScalar<RealPart = ElemReal> + From<ElemReal> + PartialOrd,
+        Elem: LinxalImplScalar<RealPart = ElemReal> + From<ElemReal> + PartialOrd,
         Elem: Mul<ElemReal, Output = Elem> + Add<ElemReal, Output = Elem>,
         Elem: Mul<Elem, Output = Elem> + Add<Elem, Output = Elem>,
         Elem: Div<ElemReal, Output = Elem> + Sub<ElemReal, Output = Elem>,
@@ -391,7 +391,7 @@ SteppingIterator<'a, ModelF, Elem, ElemReal, S1, S2, S3, S4>
 {
   fn run<F1>(&mut self, idx: usize, dir: bool, end: Elem, end_test: F1)
                  -> Option<(&'a mut &'a mut State<Elem, ElemReal, S1, S2, S3>,
-                            Result<(usize, Elem, Option<ArrayBase<Vec<Elem>, Ix2>>), ()>)>
+                            Result<(usize, Elem, Option<Array<Elem, Ix2>>), ()>)>
     where F1: Fn(Elem) -> bool,
   {
     let mut quit_next = false;
@@ -435,7 +435,7 @@ Iterator for SteppingIterator<'a, ModelF, Elem, ElemReal, S1, S2, S3, S4>
         S2: DataMut<Elem = Elem>,
         S3: Data<Elem = Elem::RealPart>,
         S4: Data<Elem = Elem>,
-        Elem: LinxalScalar<RealPart = ElemReal> + From<ElemReal> + PartialEq + PartialOrd,
+        Elem: LinxalImplScalar<RealPart = ElemReal> + From<ElemReal> + PartialEq + PartialOrd,
         Elem: Mul<ElemReal, Output = Elem> + Add<ElemReal, Output = Elem>,
         Elem: Mul<Elem, Output = Elem> + Add<Elem, Output = Elem>,
         Elem: Div<ElemReal, Output = Elem> + Sub<ElemReal, Output = Elem>,
@@ -443,7 +443,7 @@ Iterator for SteppingIterator<'a, ModelF, Elem, ElemReal, S1, S2, S3, S4>
         ElemReal: BoundsHelper,
 {
   type Item = (&'a mut &'a mut State<Elem, ElemReal, S1, S2, S3>,
-               Result<(usize, Elem, Option<ArrayBase<Vec<Elem>, Ix2>>), ()>);
+               Result<(usize, Elem, Option<Array<Elem, Ix2>>), ()>);
 
   fn next(&mut self) -> Option<Self::Item> {
     let idx = match self.idx {
@@ -480,7 +480,7 @@ DoubleEndedIterator for SteppingIterator<'a, ModelF, Elem, ElemReal, S1, S2, S3,
         S2: DataMut<Elem = Elem>,
         S3: Data<Elem = Elem::RealPart>,
         S4: Data<Elem = Elem>,
-        Elem: LinxalScalar<RealPart = ElemReal> + From<ElemReal> + PartialEq + PartialOrd,
+        Elem: LinxalImplScalar<RealPart = ElemReal> + From<ElemReal> + PartialEq + PartialOrd,
         Elem: Mul<ElemReal, Output = Elem> + Add<ElemReal, Output = Elem>,
         Elem: Mul<Elem, Output = Elem> + Add<Elem, Output = Elem>,
         Elem: Div<ElemReal, Output = Elem> + Sub<ElemReal, Output = Elem>,
@@ -520,7 +520,7 @@ pub fn y_value<Elem, ElemReal, S1, S2>(xi: Elem, x: Elem, h: ElemReal,
                                        dest: ArrayBase<S2, Ix1>)
   where S1: Data<Elem = Elem>,
         S2: DataMut<Elem = Elem>,
-        Elem: LinxalScalar<RealPart = ElemReal> + Mul<ElemReal, Output = Elem>,
+        Elem: LinxalImplScalar<RealPart = ElemReal> + Mul<ElemReal, Output = Elem>,
         ElemReal: BoundsHelper,
 {
   let one: Elem = One::one();

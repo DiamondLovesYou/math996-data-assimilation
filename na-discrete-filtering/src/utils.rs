@@ -3,7 +3,7 @@ use nd::{ArrayBase, Ix1, Ix2, Array, Data, DataMut, ViewRepr, ArrayView, ArrayVi
 use linxal::factorization::cholesky::*;
 use linxal::eigenvalues::Solution;
 use linxal::types::Symmetric;
-use linxal::types::{LinxalScalar, c32, c64};
+use linxal::types::{LinxalImplScalar, c32, c64};
 use num_complex::Complex;
 use num_traits::Float;
 
@@ -20,7 +20,7 @@ impl CholeskyLDL for f64 {
   {
     let mut u = Cholesky::compute_into(a.to_owned(), uplo)?;
     let n = u.dim();
-    let mut d: ArrayBase<Vec<f64>, _> = ArrayBase::zeros(n.0);
+    let mut d: Array<f64, _> = ArrayBase::zeros(n.0);
     for i in 0..n.0 {
       d[[i]] = u[[i, i]];
       if u[[i, i]] == 1.0 { continue; }
@@ -115,16 +115,16 @@ pub trait SolutionHelper<EV, IV> {
   fn values_and_left_vectors(&mut self) -> (ArrayViewMut<IV, Ix1>, ArrayView<EV, Ix2>);
 }
 
-impl<T> SolutionHelper<T, Complex<<T as LinxalScalar>::RealPart>> for Solution<T, Complex<<T as LinxalScalar>::RealPart>>
-  where T: Float + LinxalScalar,
+impl<T> SolutionHelper<T, Complex<<T as LinxalImplScalar>::RealPart>> for Solution<T, Complex<<T as LinxalImplScalar>::RealPart>>
+  where T: Float + LinxalImplScalar,
 {
-  fn values(self) -> Array<Complex<<T as LinxalScalar>::RealPart>, Ix1> {
+  fn values(self) -> Array<Complex<<T as LinxalImplScalar>::RealPart>, Ix1> {
     let Solution {
       values, ..
     } = self;
     values
   }
-  fn values_and_left_vectors(&mut self) -> (ArrayViewMut<Complex<<T as LinxalScalar>::RealPart>, Ix1>, ArrayView<T, Ix2>) {
+  fn values_and_left_vectors(&mut self) -> (ArrayViewMut<Complex<<T as LinxalImplScalar>::RealPart>, Ix1>, ArrayView<T, Ix2>) {
     (self.values.view_mut(), self.left_vectors.as_ref().unwrap().view())
   }
 }

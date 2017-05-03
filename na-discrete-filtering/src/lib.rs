@@ -11,6 +11,10 @@ extern crate ndarray_parallel as nd_par;
 use rand::Rng;
 use nd::{ArrayViewMut, ArrayView, Ix1};
 
+pub use error::Result;
+
+pub mod error;
+
 pub mod utils;
 pub mod variational;
 pub mod kalman;
@@ -39,7 +43,7 @@ pub mod kalman;
 pub trait Workspace<I>
   where I: Initializer,
 {
-  fn alloc(i: I, rand: &mut Rng, total_steps: u64) -> Self;
+  fn alloc(i: I, rand: &mut Rng, total_steps: u64) -> Result<Self>;
 }
 pub trait Initializer { }
 pub trait State<'a, WS> {
@@ -56,7 +60,7 @@ pub trait Algorithm<M, Ob>
           rand: &mut Rng,
           model: &mut ModelStats<M>,
           _observer: &Ob,
-          steps: u64) -> Self;
+          steps: u64) -> Result<Self>;
 
   /// This function shall not allocate.
   fn next_step(&self,
@@ -66,7 +70,7 @@ pub trait Algorithm<M, Ob>
                workspace: &mut Self::WS,
                model: &mut ModelStats<M>,
                observer: &Ob)
-               -> Result<(), ()>;
+               -> Result<()>;
 }
 
 pub trait Model<E>: Send + Sync {

@@ -1,10 +1,19 @@
 
+[package]
+name = "math-996-data-assimilation"
+version = "0.0.0"
+
+[lib]
 
 [workspace]
-members = ["na-quadrature", "na-discrete-filtering",
+members = ["na-quadrature", "na-discrete-filtering", "na-pde",
            "util", "plot-helper",
 
            "lorenz-problems/sixty-three",
+           "lorenz-problems/ninety-five",
+           "lorenz-problems/fourd-var",
+           "lorenz-problems/pseudo-orbit",
+           "lorenz-problems/shadowing-refinement",
 
            "book-problems/common",
            "book-problems/p13",
@@ -12,7 +21,10 @@ members = ["na-quadrature", "na-discrete-filtering",
            "book-problems/p15"]
 
 [replace]
-"linxal:0.5.2" = { git = "https://github.com/DiamondLovesYou/linxal.git", branch = "merged-prs", default-features = false, features = ["openblas-system"] }
+#"linxal:0.5.2" = { git = "https://github.com/DiamondLovesYou/linxal.git", branch = "merged-prs", default-features = false, features = ["openblas-system"] }
+"linxal:0.6.0" = { git = "file:///home/dick/Sync/workspace/linxal", branch = "merged-prs" }
 
 [profile.release]
+lto = true
 debug = true
+debug-assertions =

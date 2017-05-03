@@ -4,15 +4,20 @@ name = "p13"
 version = "0.1.0"
 
 [dependencies]
-gnuplot = "0.0.22"
-ndarray = "0.8.0"
-num-traits = "0.1.37"
-rand = "0.3.15"
-linxal = "0.5.1"
+gnuplot = "^0.0"
+ndarray = "^0.9"
+num-traits = "^0.1"
+rand = "^0.3"
+rayon = "0.7.0"
 
 [dependencies.common]
 optional = false
 path = "../common"
+
+[dependencies.linxal]
+default-features = false
+features = ["netlib"]
+version = "^0.6"
 
 [dependencies.na-discrete-filtering]
 optional = false

@@ -1,0 +1,6 @@
+[package]
+name = "pseudo-orbit"
+version = "0.1.0"
+authors = ["Richard Diamond <wichard@vitalitystudios.com>"]
+
+[dependencies]

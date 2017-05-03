@@ -5,17 +5,22 @@ extern crate num_traits;
 extern crate na_discrete_filtering as na_df;
 extern crate gnuplot;
 extern crate common;
+extern crate rayon;
 
 use common::*;
 use na_df::{Algorithm, Workspace};
 use na_df::kalman::etkf::{Algo, OwnedWorkspace};
 
 fn main() {
-
+  {
+    let cfg = rayon::Configuration::new();
+    let cfg = cfg.num_threads(16);
+    rayon::initialize(cfg).unwrap();
+  }
   const STEPS: usize = 1000;
 
   let mut setup = SinMapSetup::default();
-  setup.ensemble_count = 100;
+  setup.ensemble_count = 10;
   setup.steps = STEPS;
 
   let mut data: SinMapData = setup.into();

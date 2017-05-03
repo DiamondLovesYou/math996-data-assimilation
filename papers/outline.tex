@@ -1,0 +1,191 @@
+\documentclass[a4paper, 12pt, notitlepage]{report}
+\usepackage{mathtools, hyperref}
+
+\usepackage[left=1in, right=1in, top=1in, bottom=1in]{geometry}
+
+\usepackage{titling, bm}
+\usepackage{lipsum}
+
+\pretitle{\begin{center}\Huge\bfseries}
+\posttitle{\par\end{center}\vskip 0.5em}
+\preauthor{\begin{center}\Large\ttfamily}
+\postauthor{\end{center}}
+\predate{\par\large\centering}
+\postdate{\par}
+
+\title{A study of standard, implicit, and optimal particle filters
+    applied to a shallow water model (DRAFT, INCOMPLET)}
+\author{Richard Diamond \\ \href{mailto:richarddiamond@ku.edu}{richarddiamond@ku.edu}}
+\date{\today}
+
+\RequirePackage[style=chem-acs, backend=biber]{biblatex}
+\addglobalbib{refs.bib}
+
+\delimitershortfall-1sp
+\newcommand\abs[1]{\left|#1\right|}
+\newcommand{\iu}{{i\mkern1mu}}
+
+\nonstopmode
+
+\begin{document}
+  \maketitle
+  \thispagestyle{empty}
+
+  \begin{abstract}
+  Typical data assimilation techniques including 3/4DVar and ensemble
+  Kalman/particle filters (EnKF/PF) can and do fail on hard nonlinear models due
+  to errors in the linearization in 3 and 4DVar or due to particle significance
+  collapse as in EnKF/PF. In high dimensional models, the space designated by
+  the observations is relatively small. This is hard for a Bayesian filter to
+  produce likely samples. Implicit sampling extends particle filters, in much
+  the same way as in the optimal filter but to a lesser extent, by making use of
+  some of the data during sampling. In this paper, we code and compare standard,
+  implicit, and optimal proposal particle filters to a shallow water model.
+  \end{abstract}
+
+  \section{Introduction}
+  In the geosciences, one is concerned with the state of a system. Even in the
+  presence of a perfect model, assimilating sparse observations can be
+  challenging. Sequential data assimilation schemes are used to combine
+  observations of a physical system state into an estimate of it's current
+  state. This state estimate, or analysis, is then used as input to forecasting
+  steps, resulting in probability densities.
+
+  \par
+  TODO: recall the various discrete time filtering algos.
+
+  \par
+  In this paper, we implement the spectral shallow water equations in a spherical
+  geometry model with Rossby-Haurwitz Wave number four initial conditions.
+  \par
+  First we will discuss the model as applied in a spherical setting, the
+  Rossby-Haurwitz waves used to test the numerical method, and the spectral . Next we will discuss
+  the data assimilation techniques as applied to the model
+  \section{Model}
+  The shallow water equations are a hyperbolic system of partial differential
+  equations. They describe the behavior of a fluid flow assuming pressure
+  invariance, derived from depth-integrating the Navier-Stokes equations,
+  assuming the horizontal length is much larger than the vertical length.
+  The equations are given by:
+  \begin{equation} \label{swe}
+    \begin{split}
+      \frac{\partial u}{\partial t} + \frac{u}{a\ cos\ \theta}\frac{\partial
+        u}{\partial \lambda} + \frac{u}{a}\frac{\partial u}{\partial \theta} -
+      \frac{tan\ \theta}{a}vu - fv &= -\frac{g}{a\ cos\ \theta}\frac{\partial
+        h}{\partial \lambda} \\
+      \frac{\partial v}{\partial t} + \frac{v}{a\ cos\ \theta}\frac{\partial
+        v}{\partial \lambda} + \frac{v}{a}\frac{\partial v}{\partial \theta} +
+      \frac{tan\ \theta}{a}u^2+fu&=-\frac{g}{a}\frac{\partial h}{\partial
+        \theta} \\
+      \frac{\partial h}{\partial t} + \frac{h}{a\ cos\ \theta}\frac{\partial
+        h}{\partial \lambda} + \frac{h}{a}\frac{\partial h}{\partial \theta} +
+      \frac{h}{a\ cos\ \theta}\bigg[\frac{\partial u}{\partial \lambda} +
+        \frac{\partial \big(cos\ \theta\big)}{\partial \theta}\bigg] &= 0
+    \end{split}
+  \end{equation}
+  where \(g\) is the acceleration due to gravity, \(gh\) is the free surface
+  geopotential, \(h\) is the free surface height, \(f=2\Omega sin\, \theta\) is
+  the Coriolis parameter, \(\Omega\) is Earth's angular velocity, \(\theta\) is
+  the angle of latitude, \(\lambda\) is the longitude, \(a\) is Earth's radius,
+  and \(V=u_x+v_y\) is the horizontal velocity vector on the surface of the
+  sphere.
+  \par
+  Rossby waves are a \beta-plane approximation of the barotropic vorticity
+  equation to the deformation of Earth from a perfect sphere, and are related to
+  large scale waves in the atmosphere. Haurwitz later introduced equivalent
+  solutions for the sphere, now called the Rossby-Haurwitz waves, resulting in
+  propagating solutions of the non-divergent barotropic vorticity equation on a
+  sphere. Rossby-Haurwitz waves are widely used as test cases for numerical
+  methods for solving the shallow water equations in spherical geometry
+  \cite{williamson1992standard}. It was shown in \cite{thuburn2000numerical}
+  that the Rossby-Haurwitz wave number four breaks down into turbulent flows
+  after long term numerical integration.
+  \par
+  The initial velocity field is defined as:
+  \begin{equation} \label{ivf}
+    \begin{split}
+      u &= a\omega\, cos\, \phi + a K\, cos^{r-1}\phi\big(r\, sin^2\,
+      \phi-cos^2\, \phi\big)\, cos\big(r\lambda\big) \\
+      v &= -a K r\, cos^{r-1}\, \phi\, sin\, \phi\, sin\big(r\lambda\big)
+    \end{split}
+  \end{equation}
+  and the initial height field is defined as:
+  \begin{equation} \label{ihf}
+    \begin{split}
+      h &= h_0 + \frac{a^2}{g}\big[A(\phi)+B(\phi)\,cos(r\lambda) + C(\phi)\,
+        cos(2r\lambda)\big]
+    \end{split}
+  \end{equation}
+  with:
+  \begin{equation} \label{rhwabc}
+    \begin{split}
+      A(\phi) &= \frac{\omega}{2}(2\Omega+\omega)\, cos^2\, \phi +
+      \frac{1}{4}k^2\,cos^{2r}\,\phi\big[(r+1)\, cos^2\,\phi +
+        (2r^2-2r-2)-2r^2\,cos^2\phi\big] \\
+      B(\phi) &= \frac{2(\Omega +
+        \omega)}{(r+1)(r+2)}\,cos^r\phi\big[(r^2+2r+2)-(r+1)^2\,cos^2\,\phi\big]
+      \\
+      C(\phi) &= \frac{1}{4}k^2\, cos^{2r}\, \phi\big[(r+1)\, cos^2\,\phi - (r+2)\big]
+    \end{split}
+  \end{equation}
+  where \(h_0\) is the height at the poles, \(r\) is the wave number, \(\omega\) is the
+  west-east zonal wind phase velocity, and \(k\) is the wave amplitude.
+
+  \subsection{Discretization by spectral decomposition}
+  The spectral decomposition, as given in \cite{jakob1995spectral}, is
+  \begin{equation} \label{spectraldecomp}
+    \begin{split}
+      \phi(\lambda,\mu) &= \sum_{m=-M}^{M}
+      \sum_{n=\abs{m}}^{\Re(m)}\phi_{m,n}P_{m,n}(\mu)\exp(\iu m \lambda)
+    \end{split}
+  \end{equation}
+  where \(P_{m,n}(\mu)\) is the Legendre polynomial, \(P_{m,n}(\mu)\exp(\iu m
+  \lambda)\) are the spherical harmonic functions, \(M\) is the highest Fourier
+  wavenumber in the east-west representation, and \Re(m) is the highest degree
+  of the corresponding Legendre polynomials for longitudinal wavenumber \(m\).
+  \par
+  The coefficients of \ref{spectraldecomp} are determined by:
+  \begin{equation} \label{spectraldecompcoeff}
+    \begin{split}
+      \phi_{m,n} &= \int_{-1}^1 \frac{1}{2\pi} \int_0^{2\pi} \phi(\lambda)
+      \exp(-\iu m \lambda) P_{m,n}(\mu)d\lambda d\mu
+    \end{split}
+  \end{equation}
+  The inner integral is computed with a fast Fourier Transform algorithm. The
+  outer integral is evaluated using Gaussian quadrature on the transform grid
+  \begin{equation} \label{grid}
+    \begin{split}
+      \phi_{m,n} &= \sum_{j=1}^J\phi_m(\mu_j)P_{m,n}(\mu_j)w_j
+    \end{split}
+  \end{equation}
+  where the \(\mu_j\)s are at the Gaussian latitudes \(\theta_j\), which
+  correspond to the J roots of the Legendre polynomial \(P_j(sin\,\theta_j)=0\).
+  \par
+  The size of the grid is determined to prevent the aliased representation of
+  quadratic terms:
+  \begin{equation} \label{gridsize}
+    \begin{split}
+      TODO: causes\ terrible\ pixelation
+      %I \geq 3\Re(m)+1 \\
+      %J \geq \frac{3 max \Re(m) +1}{2}
+    \end{split}
+  \end{equation}
+  where \(N\) is the highest wavenumber from the latitudinal Legendre
+  representation.
+  \section{Assimilation}
+  The dynamical system of the form:
+  \begin{equation} \label{idosde}
+    \begin{split}
+      d\bm{x}=f(\bm{x},t)+g(\bm{x},t)dw
+    \end{split}
+  \end{equation}
+  where \(x\) is an \(m\)-dimensional vector and \(f\) is an \(m\)-dimensional
+  vector function.
+  \section{Experiment}
+  For this paper's experiment, we generate the truth from the model with initial
+  conditions propagated forward in time by the model without noise (ie with
+  deterministic dynamics).
+  \nocite{*}
+  \printbibliography
+
+\end{document}

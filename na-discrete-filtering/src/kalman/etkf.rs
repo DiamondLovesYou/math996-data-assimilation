@@ -3,14 +3,14 @@ use nd::{Array, ArrayBase, ArrayView, ArrayViewMut, Ix2, Ix1,
          Axis};
 use nd::linalg::general_mat_mul;
 
-use linxal::types::{LinxalScalar};
+use linxal::types::{LinxalImplScalar};
 use linxal::solve_linear::general::SolveLinear;
 use linxal::solve_linear::symmetric::SymmetricSolveLinear;
 use linxal::eigenvalues::general::Eigen;
 use num_traits::{NumCast, One, Zero, Float};
 use num_complex::Complex;
 use rand::Rng;
-use rand::distributions::IndependentSample;
+use rand::distributions::{Sample, IndependentSample};
 use rand::distributions::normal::Normal;
 use std::ops::{Add, Sub, Mul, Div,
                AddAssign, SubAssign,
@@ -31,7 +31,7 @@ pub use super::Model;
 
 #[derive(Debug)]
 pub struct OwnedWorkspace<E>
-  where E: LinxalScalar,
+  where E: LinxalImplScalar,
 {
   mean: Array<E, Ix1>,
   covariance: Array<E, Ix2>,
@@ -60,15 +60,16 @@ pub struct OwnedWorkspace<E>
   transformed_centered_ensemble: Array<E, Ix2>,
 }
 impl<'a, E> Workspace<Init<'a, E>> for OwnedWorkspace<E>
-  where E: LinxalScalar + From<f64> + NumCast + SolveLinear + Eigen,
-        <E as Eigen>::Solution: SolutionHelper<E, Complex<<E as LinxalScalar>::RealPart>>,
+  where E: LinxalImplScalar<Complex = Complex<<E as LinxalImplScalar>::RealPart>>,
+        Complex<<E as LinxalImplScalar>::RealPart>: LinxalImplScalar,
+        E: From<f64> + NumCast + SolveLinear + Eigen,
         E: Add<E, Output = E> + Sub<E, Output = E>,
         E: AddAssign<E> + SubAssign<E>,
-        E: Add<<E as LinxalScalar>::RealPart, Output = E> + Sub<<E as LinxalScalar>::RealPart, Output = E>,
+        E: Add<<E as LinxalImplScalar>::RealPart, Output = E> + Sub<<E as LinxalImplScalar>::RealPart, Output = E>,
         E: Mul<E, Output = E> + Div<E, Output = E>,
         E: MulAssign<E> + DivAssign<E>,
-        E: Mul<<E as LinxalScalar>::RealPart, Output = E> + Div<<E as LinxalScalar>::RealPart, Output = E>,
-        E: MulAssign<<E as LinxalScalar>::RealPart> + DivAssign<<E as LinxalScalar>::RealPart>,
+        E: Mul<<E as LinxalImplScalar>::RealPart, Output = E> + Div<<E as LinxalImplScalar>::RealPart, Output = E>,
+        E: MulAssign<<E as LinxalImplScalar>::RealPart> + DivAssign<<E as LinxalImplScalar>::RealPart>,
 {
   fn alloc(i: Init<'a, E>, mut rand: &mut Rng, _: u64) -> OwnedWorkspace<E> {
     let Init {
@@ -80,7 +81,7 @@ impl<'a, E> Workspace<Init<'a, E>> for OwnedWorkspace<E>
       ..
     } = i;
 
-    let normal = Normal::new(Zero::zero(), One::one());
+    let mut normal = Normal::new(Zero::zero(), One::one());
 
     let n = initial_mean.dim();
 
@@ -94,7 +95,7 @@ impl<'a, E> Workspace<Init<'a, E>> for OwnedWorkspace<E>
     let sol = Eigen::compute_into(initial_covariance.to_owned(),
                                   false, false)
       .expect("can't eigendecomp initial_covariance");
-    let d = sol.values().map(|v| v.re.sqrt() );
+    let d = sol.values.map(|v| v.re.sqrt() );
 
     {
       let mut first = ensembles.view_mut();
@@ -102,7 +103,7 @@ impl<'a, E> Workspace<Init<'a, E>> for OwnedWorkspace<E>
         let mut r: Array<E, Ix2> = ArrayBase::zeros((ensemble_count, n));
         for i in 0..ensemble_count {
           for j in 0..n {
-            r[[i,j]] = From::from(normal.ind_sample(&mut rand));
+            r[[i,j]] = From::from(normal.sample(&mut rand));
             r[[i,j]] *= d[j];
           }
         }
@@ -144,22 +145,23 @@ impl<'a, E> Workspace<Init<'a, E>> for OwnedWorkspace<E>
   }
 }
 impl<E> EnsembleWorkspace<E> for OwnedWorkspace<E>
-  where E: LinxalScalar,
+  where E: LinxalImplScalar,
 {
   fn mean_view(&self) -> ArrayView<E, Ix1> { self.mean.view() }
   fn covariance_view(&self) -> ArrayView<E, Ix2> { self.covariance.view() }
   fn ensembles_view(&self) -> ArrayView<E, Ix2> { self.ensembles.view() }
 }
 impl<E> ResampleForcing<E> for OwnedWorkspace<E>
-  where E: LinxalScalar + From<f64>,
-        E: MulAssign<<E as LinxalScalar>::RealPart>,
+  where E: LinxalImplScalar + From<f64>,
+        E: MulAssign<<E as LinxalImplScalar>::RealPart>,
 {
   fn forcing_view_mut(&mut self) -> ArrayViewMut<E, Ix2> { self.forcing.view_mut() }
 }
 
 impl<E> EnsemblePredict<E> for OwnedWorkspace<E>
-  where E: LinxalScalar + Send + Sync + AddAssign<E>,
-        ::rayon::par_iter::reduce::SumOp: ::rayon::par_iter::reduce::ReduceOp<E>,
+  where E: LinxalImplScalar + Send + Sync + AddAssign<E> + NumCast,
+        E: DivAssign<E>,
+        E: ::std::iter::Sum,
 {
   fn ensemble_predict_stuff(&mut self) -> EnsemblePredictModelStuff<E> {
     EnsemblePredictModelStuff {
@@ -174,7 +176,7 @@ impl<E> EnsemblePredict<E> for OwnedWorkspace<E>
 }
 
 pub struct Algo<'a, E>
-  where E: LinxalScalar,
+  where E: LinxalImplScalar,
 {
   ensemble_count: usize,
   gamma: ArrayView<'a, E::RealPart, Ix1>,
@@ -185,17 +187,18 @@ pub struct Algo<'a, E>
 impl<'init, 'state, E, M, Ob> Algorithm<M, Ob> for Algo<'init, E>
   where M: ::Model<E>,
         Ob: ::Observer<E>,
-        E: LinxalScalar + From<f64> + NumCast + SolveLinear + SymmetricSolveLinear + Send + Sync + Eigen + Float,
-        <E as Eigen>::Solution: SolutionHelper<E, Complex<<E as LinxalScalar>::RealPart>>,
-        ::rayon::par_iter::reduce::SumOp: ::rayon::par_iter::reduce::ReduceOp<E>,
-        <E as LinxalScalar>::RealPart: Send + Sync,
+        E: LinxalImplScalar<Complex = Complex<<E as LinxalImplScalar>::RealPart>>,
+        Complex<<E as LinxalImplScalar>::RealPart>: LinxalImplScalar,
+        E: From<f64> + NumCast + SolveLinear + SymmetricSolveLinear + Send + Sync + Eigen + Float,
+        <E as LinxalImplScalar>::RealPart: Send + Sync,
         E: Add<E, Output = E> + Sub<E, Output = E>,
         E: AddAssign<E> + SubAssign<E>,
-        E: Add<<E as LinxalScalar>::RealPart, Output = E> + Sub<<E as LinxalScalar>::RealPart, Output = E>,
+        E: Add<<E as LinxalImplScalar>::RealPart, Output = E> + Sub<<E as LinxalImplScalar>::RealPart, Output = E>,
         E: Mul<E, Output = E> + Div<E, Output = E>,
         E: MulAssign<E> + DivAssign<E>,
-        E: Mul<<E as LinxalScalar>::RealPart, Output = E> + Div<<E as LinxalScalar>::RealPart, Output = E>,
-        E: MulAssign<<E as LinxalScalar>::RealPart> + DivAssign<<E as LinxalScalar>::RealPart>,
+        E: Mul<<E as LinxalImplScalar>::RealPart, Output = E> + Div<<E as LinxalImplScalar>::RealPart, Output = E>,
+        E: MulAssign<<E as LinxalImplScalar>::RealPart> + DivAssign<<E as LinxalImplScalar>::RealPart>,
+        E: ::std::iter::Sum,
 {
   type Init  = Init<'init, E>;
   type WS    = OwnedWorkspace<E>;
@@ -226,12 +229,14 @@ impl<'init, 'state, E, M, Ob> Algorithm<M, Ob> for Algo<'init, E>
   {
     use linxal::solve_linear::SolveLinear;
 
+    const MIN_GROUP: usize = 64;
+
     let n = workspace.mean.dim();
     let obs_size = self.observation_operator.dim().0;
-    let ec_e: <E as LinxalScalar>::RealPart = NumCast::from(self.ensemble_count).unwrap();
-    let s = (ec_e - <E as LinxalScalar>::RealPart::one()).sqrt();
+    let ec_e: <E as LinxalImplScalar>::RealPart = NumCast::from(self.ensemble_count).unwrap();
+    let s = (ec_e - <E as LinxalImplScalar>::RealPart::one()).sqrt();
 
-    let normal = Normal::new(Zero::zero(), One::one());
+    let mut normal = Normal::new(Zero::zero(), One::one());
 
     // predict
 
@@ -240,10 +245,9 @@ impl<'init, 'state, E, M, Ob> Algorithm<M, Ob> for Algo<'init, E>
     workspace.estimator_predict
       .fill(Zero::zero());
     workspace.resample_forcing(self.sigma.view(),
-                               normal,
+                               &mut normal,
                                &mut rand);
     workspace.ensemble_predict(current_step, model);
-    workspace.estimator_predict.mapv_inplace(|v| v / ec_e);
 
     workspace.centered_ensemble
       .fill(Zero::zero());
@@ -254,7 +258,7 @@ impl<'init, 'state, E, M, Ob> Algorithm<M, Ob> for Algo<'init, E>
       let mut dest = workspace.centered_ensemble.column_mut(i);
       dest.assign(&ensemble);
       dest -= &estimator;
-      dest.mapv_inplace(|v| v / s);
+      dest.par_mapv_inplace(|v| v / s);
     }
 
     {
@@ -284,6 +288,7 @@ impl<'init, 'state, E, M, Ob> Algorithm<M, Ob> for Algo<'init, E>
           .axis_iter_mut(Axis(1))
           .into_par_iter()
           .zip(self.gamma.axis_iter(Axis(0)).into_par_iter().map(|v| v[()] * v[()]))
+          .with_min_len(MIN_GROUP)
           .for_each(|(mut l, gamma)| {
             l.mapv_inplace(|v| v / gamma);
           });
@@ -304,23 +309,12 @@ impl<'init, 'state, E, M, Ob> Algorithm<M, Ob> for Algo<'init, E>
                         &mut t);
         // copy `t` to `z`.
         z.assign(&t);
-        for i in 0..z.dim().0 {
-          z[[i, i]] += One::one();
-        }
-        // Now, invert t and then find the eigenvalues.
-        t.fill(Zero::zero());
-        for i in 0..self.ensemble_count {
-          t[[i, i]] = One::one();
-        }
-        SolveLinear::compute_multi_into(z.view_mut(),
-                                        t.view_mut())
-          .expect("inversion failed (singular T_j? -- this is impossible(TM))");
+        z.par_map_inplace(|v| { *v += One::one(); } );
 
-        let mut sol = Eigen::compute_into(t.to_owned(),
+        let mut sol = Eigen::compute_into(z.to_owned(),
                                           true, false)
           .expect("can't eigendecomp");
         let (d, v) = sol.values_and_left_vectors();
-        //println!("step = {}, eigenvalues = {:?}", current_step, d);
         let d = d.map(|v| {
           if v.re < Zero::zero() {
             Zero::zero()
@@ -331,13 +325,14 @@ impl<'init, 'state, E, M, Ob> Algorithm<M, Ob> for Algo<'init, E>
         t.fill(Zero::zero());
         t.axis_iter_mut(Axis(1))
           .into_par_iter()
-          .zip(v.axis_iter(Axis(1)).into_par_iter())
+          .zip(v.t().axis_iter(Axis(1)).into_par_iter())
           .zip(d.axis_iter(Axis(0)).into_par_iter())
+          .with_min_len(MIN_GROUP)
           .for_each(|((mut t, v), lambda)| {
             t.assign(&v);
             t.mapv_inplace(|s| {
               if !lambda[()].is_zero() {
-                s / lambda[()]
+                s * lambda[()]
               } else {
                 Zero::zero()
               }

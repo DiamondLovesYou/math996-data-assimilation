@@ -4,7 +4,7 @@ use rand;
 use num_traits::{Float, One};
 use rayon::prelude::*;
 use nd_par::prelude::*;
-use linxal::types::LinxalScalar;
+use linxal::types::LinxalImplScalar;
 use nd;
 use na_df::utils::{extend_dim_ref, extend_dim_mut};
 
@@ -32,12 +32,12 @@ pub fn generate_model_truth_and_observation<F, E, D, R>
  mut rand: &mut R,
 ) -> Data<E>
   where F: Fn(E, ArrayView<E, Ix1>, ArrayViewMut<E, Ix1>),
-        E: Float + LinxalScalar + From<<E as LinxalScalar>::RealPart>,
+        E: Float + LinxalImplScalar + From<<E as LinxalImplScalar>::RealPart>,
         E: Sync + Send,
         E: AddAssign<E>,
-        E: Mul<<E as LinxalScalar>::RealPart, Output = E> + Add<<E as LinxalScalar>::RealPart, Output = E>,
+        E: Mul<<E as LinxalImplScalar>::RealPart, Output = E> + Add<<E as LinxalImplScalar>::RealPart, Output = E>,
         E: Mul<E, Output = E> + Add<E, Output = E>,
-        E: Div<<E as LinxalScalar>::RealPart, Output = E> + Sub<<E as LinxalScalar>::RealPart, Output = E>,
+        E: Div<<E as LinxalImplScalar>::RealPart, Output = E> + Sub<<E as LinxalImplScalar>::RealPart, Output = E>,
         E: Div<E, Output = E> + Sub<E, Output = E>,
         E::RealPart: nd::ScalarOperand,
         D: rand::distributions::IndependentSample<E>,
