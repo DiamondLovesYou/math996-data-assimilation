@@ -1,11 +1,13 @@
 
-use nd::{ArrayBase, Ix1, Ix2, Array, Data, DataMut, ViewRepr, ArrayView, ArrayViewMut};
+use nd::{ArrayBase, Ix0, Ix1, Ix2, Array, Data, DataMut, ViewRepr, ArrayView, ArrayViewMut, Axis};
 use linxal::factorization::cholesky::*;
 use linxal::eigenvalues::Solution;
 use linxal::types::Symmetric;
 use linxal::types::{LinxalImplScalar, c32, c64};
 use num_complex::Complex;
 use num_traits::Float;
+
+use std::ops::Index;
 
 pub trait CholeskyLDL: Cholesky + Sized {
   fn compute<D1: Data>(a: &ArrayBase<D1, Ix2>, uplo: Symmetric)
@@ -126,5 +128,81 @@ impl<T> SolutionHelper<T, Complex<<T as LinxalImplScalar>::RealPart>> for Soluti
   }
   fn values_and_left_vectors(&mut self) -> (ArrayViewMut<Complex<<T as LinxalImplScalar>::RealPart>, Ix1>, ArrayView<T, Ix2>) {
     (self.values.view_mut(), self.left_vectors.as_ref().unwrap().view())
+  }
+}
+
+#[derive(Debug)]
+pub enum Diagonal<'a, E>
+  where E: 'a,
+{
+  Single(E),
+  Multiple(ArrayView<'a, E, Ix1>)
+}
+impl<'a, E> Index<usize> for Diagonal<'a, E> {
+  type Output = E;
+  fn index(&self, idx: usize) -> &E {
+    match self {
+      &Diagonal::Single(ref e) => e,
+      &Diagonal::Multiple(ref v) => &v[idx],
+    }
+  }
+}
+impl<'a, E> From<E> for Diagonal<'a, E> {
+  fn from(v: E) -> Diagonal<'a, E> {
+    Diagonal::Single(v)
+  }
+}
+impl<'a, E> From<ArrayView<'a, E, Ix1>> for Diagonal<'a, E> {
+  fn from(v: ArrayView<'a, E, Ix1>) -> Self {
+    Diagonal::Multiple(v)
+  }
+}
+
+pub trait PartialEqWithinTol<Rhs, Tol> {
+  const STD_TOL: Tol;
+  fn partial_eq_within_tol(&self, rhs: &Rhs, tol: Tol) -> bool;
+
+  fn partial_neq_within_tol(&self, rhs: &Rhs, tol: Tol) -> bool {
+    !self.partial_eq_within_tol(rhs, tol)
+  }
+
+  fn partial_eq_within_std_tol(&self, rhs: &Rhs) -> bool {
+    self.partial_eq_within_tol(rhs, Self::STD_TOL)
+  }
+  fn partial_neq_within_std_tol(&self, rhs: &Rhs) -> bool {
+    !self.partial_eq_within_std_tol(rhs)
+  }
+}
+
+impl PartialEqWithinTol<f64, f64> for f64 {
+  const STD_TOL: Self = ::std::f64::consts::E;
+  fn partial_eq_within_tol(&self, rhs: &f64, tol: f64) -> bool {
+    (self - rhs).mag() <= tol
+  }
+}
+impl PartialEqWithinTol<f32, f32> for f32 {
+  const STD_TOL: Self = ::std::f32::consts::E;
+  fn partial_eq_within_tol(&self, rhs: &f32, tol: f32) -> bool {
+    (self - rhs).mag() <= tol
+  }
+}
+impl<'a, T> PartialEqWithinTol<ArrayView<'a, T, Ix0>, T> for ArrayView<'a, T, Ix0>
+  where T: PartialEqWithinTol<T, T> + LinxalImplScalar,
+{
+  const STD_TOL: T = T::STD_TOL;
+  fn partial_eq_within_tol(&self, rhs: &ArrayView<'a, T, Ix0>, tol: T) -> bool {
+    self[()].partial_eq_within_tol(&rhs[()], tol)
+  }
+}
+impl<'a, T> PartialEqWithinTol<ArrayView<'a, T, Ix1>, T> for ArrayView<'a, T, Ix1>
+  where T: PartialEqWithinTol<T, T> + LinxalImplScalar,
+{
+  const STD_TOL: T = T::STD_TOL;
+  fn partial_eq_within_tol(&self, rhs: &ArrayView<'a, T, Ix1>, tol: T) -> bool {
+    self.axis_iter(Axis(0))
+      .zip(rhs.axis_iter(Axis(0)))
+      .all(|(l, r)| {
+        l.partial_eq_within_tol(&r, tol)
+      })
   }
 }

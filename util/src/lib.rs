@@ -37,7 +37,7 @@ impl StateSteps {
   }
 
   pub fn store_state<WS>(&mut self, step: usize, ws: &WS)
-    where WS: na_df::kalman::EnsembleWorkspace<f64>,
+    where WS: na_df::ensemble::EnsembleWorkspace<f64>,
   {
     self.means
       .subview_mut(Axis(0), step)
@@ -83,5 +83,66 @@ impl<T, Args, Ret> Fn<Args> for Lambda<T, Args, Ret>
 {
   extern "rust-call" fn call(&self, a: Args) -> Ret {
     self.0.run_lambda(a)
+  }
+}
+
+pub struct MeshGrid {
+  pub grid: Array<f64, Ix3>,
+  pub scale: (f64, f64),
+  pub xmean: f64,
+  pub ymean: f64,
+}
+impl MeshGrid {
+  pub fn dim(&self) -> (usize, usize) {
+    (self.grid.dim().1, self.grid.dim().2)
+  }
+
+  pub fn x_max(&self) -> f64 { self.dim().0 as f64 * self.scale.0 }
+  pub fn y_max(&self) -> f64 { self.dim().1 as f64 * self.scale.1 }
+
+  pub fn x_varying(&self) -> ArrayView<f64, Ix2> {
+    self.grid.subview(Axis(0), 0)
+  }
+  pub fn y_varying(&self) -> ArrayView<f64, Ix2> {
+    self.grid.subview(Axis(0), 1)
+  }
+}
+
+pub fn meshgrid(x: usize, x_scale: f64, y: usize, y_scale: f64) -> MeshGrid {
+  let mut grid = Array::zeros((2, x, y));
+
+  {
+    let gv = grid.view_mut();
+    let (mut x_grid0, mut y_grid0) = gv.split_at(Axis(0), 1);
+    let mut x_grid = x_grid0.subview_mut(Axis(0), 0);
+    let mut y_grid = y_grid0.subview_mut(Axis(0), 0);
+    for i in 0..x {
+      for j in 0..y {
+        x_grid[(i, j)] = (j as f64) * x_scale;
+        y_grid[(i, j)] = (i as f64) * y_scale;
+      }
+    }
+  }
+
+  let xmean = (0..x)
+    .skip(1)
+    .fold(0.0, |avg, dc| {
+      let sum = avg * (dc as f64 - 1.0) + (dc as f64) * x_scale;
+      let avg = sum / (dc as f64);
+      avg
+    });
+  let ymean = (0..y)
+    .skip(1)
+    .fold(0.0, |avg, dc| {
+      let sum = avg * (dc as f64 - 1.0) + (dc as f64) * y_scale;
+      let avg = sum / (dc as f64);
+      avg
+    });
+
+  MeshGrid {
+    grid: grid,
+    scale: (x_scale, y_scale),
+    xmean: xmean,
+    ymean: ymean,
   }
 }

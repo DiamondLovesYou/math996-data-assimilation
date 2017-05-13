@@ -1,0 +1,6 @@
+[package]
+name = "etkf"
+version = "0.1.0"
+authors = ["Richard Diamond <wichard@vitalitystudios.com>"]
+
+[dependencies]

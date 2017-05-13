@@ -9,6 +9,8 @@ use nd::{ArrayView, Ix2, Axis,};
 
 use gnuplot::{Figure, PlotOption, DashType, AxesCommon, Axes3D};
 
+pub mod xdmf;
+
 pub fn make_ensemble_plots<T>(source: &T, states: &StateSteps,
                               js: u64, what: &str)
   where T: ModelTruth<f64>,

@@ -1,0 +1,152 @@
+
+//! very very non programmable xdmf writer for timeseries grids.
+//! for every time step, a new xdmf file is written and placed
+//! next to the binary data file. once timestepping is complete,
+
+use util::MeshGrid;
+use nd::prelude::*;
+
+use std::env::current_dir;
+use std::path::{Path, PathBuf};
+
+use std::io::Write;
+use std::fs::File;
+
+const DATA_OUTPUT_SUBDIR: &'static str = "data/output/";
+fn output_path(run_name: &'static str, filename: &str) -> PathBuf {
+  let cdir = current_dir().unwrap();
+  let outdir = cdir.join(DATA_OUTPUT_SUBDIR);
+  let outdir = if outdir.exists() {
+    outdir
+  } else {
+    cdir.join("../..")
+      .join(DATA_OUTPUT_SUBDIR)
+  };
+
+  assert!(outdir.exists());
+
+  let outdir = outdir.join(run_name);
+  if !outdir.exists() {
+    ::std::fs::create_dir_all(outdir.as_path())
+      .expect("failed to create run data output dir!");
+  }
+
+  let outpath = outdir.join(filename);
+
+  outpath.to_path_buf()
+}
+
+#[derive(Debug, Default)]
+pub struct Xdmf {
+  run_name: &'static str,
+  complete: bool,
+  steps: Vec<(u64, PathBuf)>,
+}
+
+impl Xdmf {
+  pub fn new(run_name: &'static str) -> Xdmf {
+    Xdmf {
+      run_name: run_name,
+      complete: false,
+      steps: vec![],
+    }
+  }
+  pub fn next_timestep(&mut self, step: u64, grid: &MeshGrid,
+                       state: ArrayView<f64, Ix2>) {
+    assert!(!self.complete);
+
+    let outname = format!("timestep-{}.bin", step);
+    let outpath = output_path(self.run_name, &outname[..]);
+    let xdmfname = format!("timestep-{}.xdmf", step);
+    let xdmfpath = output_path(self.run_name, &xdmfname[..]);
+
+    {
+      let mut xdmf = File::create(xdmfpath.as_path())
+        .expect("failed to create grid meta file");
+      write!(xdmf, r#"
+        <Grid Name="T@{step_i:}" GridType="Uniform">
+            <Topology Reference="/Xdmf/Domain/Topology[1]"/>
+            <Geometry Reference="/Xdmf/Domain/Geometry[1]"/>
+            <Attribute Name="h" Center="Node">
+                <DataItem Format="Binary"
+                 DataType="Float" Precision="8" Endian="Native"
+                 Dimensions="{topology_x_dim:} {topology_y_dim:}">
+                    {output_path:}
+                </DataItem>
+            </Attribute>
+        </Grid>
+"#,
+             step_i = step,
+             topology_x_dim = grid.dim().0,
+             topology_y_dim = grid.dim().1,
+             output_path = outpath.display())
+        .unwrap();
+    }
+
+    let state_slice = state.as_slice()
+      .expect("state isn't contiguous and in std order?");
+    let state_slice_u8 = unsafe {
+      ::std::slice::from_raw_parts(state_slice.as_ptr() as *const u8,
+                                   8 * state_slice.len())
+    };
+    {
+      let mut bin = File::create(outpath)
+        .expect("failed to create grid output file");
+      bin.write_all(state_slice_u8).expect("bin write failed");
+    }
+
+    self.steps.push((step, xdmfpath));
+  }
+
+  pub fn run_complete(&mut self, grid: &MeshGrid) {
+    self.complete = true;
+    if self.steps.len() == 0 {
+      return;
+    }
+
+    self.steps.sort_by_key(|v| v.0 );
+
+    let xdmfpath = output_path(self.run_name, "run.xdmf");
+    let mut xdmf = File::create(xdmfpath)
+      .expect("failed to create final xdmf file");
+
+    // >.< this *has* to be inline.
+    write!(xdmf, r#"
+<?xml version="1.0" encoding="UTF-8"?>
+<Xdmf Version="2.0" xmlns:xi="[http://www.w3.org/2001/XInclude]">
+<!DOCTYPE Xdmf SYSTEM "Xdmf.dtd" []>
+<Domain>
+    <Topology name="topo" TopologyType="2DRectMesh"
+        Dimensions="{topology_x_dim:} {topology_y_dim:}">
+    </Topology>
+    <Geometry name="geo" Type="XYZ">
+        <DataItem Format="XML" Dimensions="3">
+        0.0 0.0 0.0
+        </DataItem>
+    </Geometry>
+
+    <Grid Name="TimeSeries" GridType="Collection" CollectionType="Temporal">
+        <Time TimeType="HyperSlab">
+            <DataItem Format="XML" NumberType="Float" Dimensions="3">
+            0.0 1.0 {step_count:}
+            </DataItem>
+        </Time>
+"#,
+           step_count = self.steps.len(),
+           topology_x_dim = grid.dim().0,
+           topology_y_dim = grid.dim().1)
+      .unwrap();
+
+    for &(_, ref path) in self.steps.iter() {
+      writeln!(xdmf, "<xi:include href=\"{path:}\" parse=\"xml\" />",
+               path = path.display())
+        .unwrap();
+    }
+    write!(xdmf, r#"
+    </Grid>
+  </Domain>
+</Xdmf>
+"#).unwrap();
+
+  }
+}

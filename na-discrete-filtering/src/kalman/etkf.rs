@@ -14,20 +14,47 @@ use rand::distributions::{Sample, IndependentSample};
 use rand::distributions::normal::Normal;
 use std::ops::{Add, Sub, Mul, Div,
                AddAssign, SubAssign,
-               DivAssign, MulAssign,};
+               DivAssign, MulAssign,
+               Deref, DerefMut};
 
-use {Algorithm, Workspace};
-use utils::{SolutionHelper};
+use {Algorithm, Workspace, Result};
+use utils::{SolutionHelper, Diagonal};
 use rayon::prelude::*;
 use nd_par::prelude::*;
 
-use super::{extend_dim_mut, extend_dim_ref, EnsemblePredict,
-            EnsemblePredictModelStuff, EnsembleWorkspace,
-            ResampleForcing,};
+use super::{extend_dim_mut, extend_dim_ref, };
+use ensemble::{EnsemblePredict, EnsemblePredictModelStuff,
+               EnsembleWorkspace, EnsembleCommonState,
+               EnsembleCommonInit, };
+use forcing::ResampleForcing;
 
-pub use super::EnsembleState as State;
-pub use super::EnsembleInit as Init;
+pub use super::super::ensemble::EnsembleCommonState as State;
 pub use super::Model;
+
+pub struct Init<'a, E>
+where E: LinxalImplScalar,
+{
+  pub common: EnsembleCommonInit<'a, E>,
+  pub model_workspace_size: usize,
+}
+impl<'a, E> ::Initializer for Init<'a, E>
+  where E: LinxalImplScalar,
+{ }
+impl<'a, E> Deref for Init<'a, E>
+  where E: LinxalImplScalar,
+{
+  type Target = EnsembleCommonInit<'a, E>;
+  fn deref(&self) -> &Self::Target {
+    &self.common
+  }
+}
+impl<'a, E> DerefMut for Init<'a, E>
+  where E: LinxalImplScalar,
+{
+  fn deref_mut(&mut self) -> &mut EnsembleCommonInit<'a, E> {
+    &mut self.common
+  }
+}
 
 #[derive(Debug)]
 pub struct OwnedWorkspace<E>
@@ -71,28 +98,29 @@ impl<'a, E> Workspace<Init<'a, E>> for OwnedWorkspace<E>
         E: Mul<<E as LinxalImplScalar>::RealPart, Output = E> + Div<<E as LinxalImplScalar>::RealPart, Output = E>,
         E: MulAssign<<E as LinxalImplScalar>::RealPart> + DivAssign<<E as LinxalImplScalar>::RealPart>,
 {
-  fn alloc(i: Init<'a, E>, mut rand: &mut Rng, _: u64) -> OwnedWorkspace<E> {
+  fn alloc(i: Init<'a, E>, mut rand: &mut Rng, _: u64) -> Result<OwnedWorkspace<E>> {
     let Init {
-      initial_mean,
-      initial_covariance,
-      observation_operator,
-      ensemble_count,
+      common: EnsembleCommonInit {
+        mean,
+        covariance,
+        observation_operator,
+        ensemble_count,
+        ..
+      },
       model_workspace_size,
       ..
     } = i;
 
     let mut normal = Normal::new(Zero::zero(), One::one());
 
-    let n = initial_mean.dim();
+    let n = mean.dim();
 
-    let mut m = ArrayBase::zeros(n);
-    m.assign(&initial_mean);
-    let mut c = ArrayBase::zeros(initial_covariance.dim());
-    c.assign(&initial_covariance);
+    let mut m = mean.to_owned();
+    let mut c = covariance.to_owned();
 
     let mut ensembles = ArrayBase::zeros((ensemble_count, n));
 
-    let sol = Eigen::compute_into(initial_covariance.to_owned(),
+    let sol = Eigen::compute_into(covariance.to_owned(),
                                   false, false)
       .expect("can't eigendecomp initial_covariance");
     let d = sol.values.map(|v| v.re.sqrt() );
@@ -110,7 +138,7 @@ impl<'a, E> Workspace<Init<'a, E>> for OwnedWorkspace<E>
 
         r
       };
-      first.assign(&initial_mean.broadcast((ensemble_count, n)).unwrap());
+      first.assign(&mean.broadcast((ensemble_count, n)).unwrap());
       first.scaled_add(One::one(), &r);
     }
 
@@ -121,7 +149,7 @@ impl<'a, E> Workspace<Init<'a, E>> for OwnedWorkspace<E>
 
     m.assign(&m0);
 
-    OwnedWorkspace {
+    let r = OwnedWorkspace {
       mean: m,
       covariance: c,
       ensembles: ensembles,
@@ -141,21 +169,29 @@ impl<'a, E> Workspace<Init<'a, E>> for OwnedWorkspace<E>
       sqrt_transform: ArrayBase::zeros((ensemble_count, ensemble_count)),
       sqrt_transform_intermediate: ArrayBase::zeros((ensemble_count, ensemble_count)),
       transformed_centered_ensemble: ArrayBase::zeros((n, ensemble_count)),
-    }
+    };
+    Ok(r)
   }
 }
 impl<E> EnsembleWorkspace<E> for OwnedWorkspace<E>
   where E: LinxalImplScalar,
 {
-  fn mean_view(&self) -> ArrayView<E, Ix1> { self.mean.view() }
-  fn covariance_view(&self) -> ArrayView<E, Ix2> { self.covariance.view() }
-  fn ensembles_view(&self) -> ArrayView<E, Ix2> { self.ensembles.view() }
+  fn ensemble_state(&self) -> EnsembleCommonState<E> {
+    EnsembleCommonState {
+      state: ::State {
+        mean: self.mean.view(),
+        covariance: self.covariance.view(),
+      },
+      ensembles: self.ensembles.view(),
+    }
+  }
 }
 impl<E> ResampleForcing<E> for OwnedWorkspace<E>
   where E: LinxalImplScalar + From<f64>,
         E: MulAssign<<E as LinxalImplScalar>::RealPart>,
 {
-  fn forcing_view_mut(&mut self) -> ArrayViewMut<E, Ix2> { self.forcing.view_mut() }
+  type Disc = ();
+  fn forcing_view_mut(&mut self, _: ()) -> ArrayViewMut<E, Ix2> { self.forcing.view_mut() }
 }
 
 impl<E> EnsemblePredict<E> for OwnedWorkspace<E>
@@ -207,14 +243,14 @@ impl<'init, 'state, E, M, Ob> Algorithm<M, Ob> for Algo<'init, E>
           _rand: &mut Rng,
           _model: &mut ::ModelStats<M>,
           _observer: &Ob,
-          _: u64) -> Self
+          _: u64) -> Result<Self>
   {
-    Algo {
+    Ok(Algo {
       ensemble_count: i.ensemble_count,
       gamma: i.gamma.clone(),
       sigma: i.sigma.clone(),
       observation_operator: i.observation_operator.clone(),
-    }
+    })
   }
 
   /// This could use some cleaning.
@@ -225,7 +261,7 @@ impl<'init, 'state, E, M, Ob> Algorithm<M, Ob> for Algo<'init, E>
                workspace: &mut OwnedWorkspace<E>,
                model: &mut ::ModelStats<M>,
                observer: &Ob)
-               -> Result<(), ()>
+               -> Result<()>
   {
     use linxal::solve_linear::SolveLinear;
 
@@ -233,8 +269,10 @@ impl<'init, 'state, E, M, Ob> Algorithm<M, Ob> for Algo<'init, E>
 
     let n = workspace.mean.dim();
     let obs_size = self.observation_operator.dim().0;
-    let ec_e: <E as LinxalImplScalar>::RealPart = NumCast::from(self.ensemble_count).unwrap();
-    let s = (ec_e - <E as LinxalImplScalar>::RealPart::one()).sqrt();
+    let ec_e: <E as LinxalImplScalar>::RealPart =
+      NumCast::from(self.ensemble_count).unwrap();
+    let s = (ec_e - <E as LinxalImplScalar>::RealPart::one())
+      .sqrt();
 
     let mut normal = Normal::new(Zero::zero(), One::one());
 
@@ -244,7 +282,7 @@ impl<'init, 'state, E, M, Ob> Algorithm<M, Ob> for Algo<'init, E>
       .fill(Zero::zero());
     workspace.estimator_predict
       .fill(Zero::zero());
-    workspace.resample_forcing(self.sigma.view(),
+    workspace.resample_forcing((), Diagonal::Multiple(self.sigma.view()),
                                &mut normal,
                                &mut rand);
     workspace.ensemble_predict(current_step, model);

@@ -3,7 +3,7 @@ use linxal;
 
 pub type Result<T> = ::std::result::Result<T, Error>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum Error {
   Linxal(linxal::types::Error),
 }
