@@ -7,7 +7,7 @@ use util::MeshGrid;
 use nd::prelude::*;
 
 use std::env::current_dir;
-use std::path::{Path, PathBuf};
+use std::path::{PathBuf};
 
 use std::io::Write;
 use std::fs::File;
@@ -52,47 +52,57 @@ impl Xdmf {
     }
   }
   pub fn next_timestep(&mut self, step: u64, grid: &MeshGrid,
-                       state: ArrayView<f64, Ix2>) {
+                       attributes: &[(&'static str,
+                                      ArrayView<f64, Ix2>)]) {
     assert!(!self.complete);
 
-    let outname = format!("timestep-{}.bin", step);
-    let outpath = output_path(self.run_name, &outname[..]);
     let xdmfname = format!("timestep-{}.xdmf", step);
     let xdmfpath = output_path(self.run_name, &xdmfname[..]);
 
     {
       let mut xdmf = File::create(xdmfpath.as_path())
         .expect("failed to create grid meta file");
+
       write!(xdmf, r#"
         <Grid Name="T@{step_i:}" GridType="Uniform">
             <Topology Reference="/Xdmf/Domain/Topology[1]"/>
-            <Geometry Reference="/Xdmf/Domain/Geometry[1]"/>
-            <Attribute Name="h" Center="Node">
+            <Geometry Reference="/Xdmf/Domain/Geometry[1]"/>"#,
+             step_i = step)
+        .unwrap();
+
+      for &(name, ref state) in attributes.iter() {
+        let outname = format!("timestep-{}-attr-{}.bin",
+                              step, name);
+        let outpath = output_path(self.run_name, &outname[..]);
+
+        writeln!(xdmf, r#"
+            <Attribute Name="{name}" Center="Node">
                 <DataItem Format="Binary"
                  DataType="Float" Precision="8" Endian="Native"
                  Dimensions="{topology_x_dim:} {topology_y_dim:}">
                     {output_path:}
                 </DataItem>
-            </Attribute>
-        </Grid>
-"#,
-             step_i = step,
-             topology_x_dim = grid.dim().0,
-             topology_y_dim = grid.dim().1,
-             output_path = outpath.display())
-        .unwrap();
-    }
+            </Attribute>"#,
+               name = name,
+               topology_x_dim = grid.dim().0,
+               topology_y_dim = grid.dim().1,
+               output_path = outpath.display())
+          .unwrap();
 
-    let state_slice = state.as_slice()
-      .expect("state isn't contiguous and in std order?");
-    let state_slice_u8 = unsafe {
-      ::std::slice::from_raw_parts(state_slice.as_ptr() as *const u8,
-                                   8 * state_slice.len())
-    };
-    {
-      let mut bin = File::create(outpath)
-        .expect("failed to create grid output file");
-      bin.write_all(state_slice_u8).expect("bin write failed");
+        let state_slice = state.as_slice_memory_order()
+          .expect("state isn't contiguous?");
+        let state_slice_u8 = unsafe {
+          ::std::slice::from_raw_parts(state_slice.as_ptr() as *const u8,
+                                       8 * state_slice.len())
+        };
+        {
+          let mut bin = File::create(outpath)
+            .expect("failed to create grid output file");
+          bin.write_all(state_slice_u8).expect("bin write failed");
+        }
+      }
+
+      writeln!(xdmf, "        </Grid>").unwrap();
     }
 
     self.steps.push((step, xdmfpath));
@@ -111,17 +121,19 @@ impl Xdmf {
       .expect("failed to create final xdmf file");
 
     // >.< this *has* to be inline.
-    write!(xdmf, r#"
-<?xml version="1.0" encoding="UTF-8"?>
-<Xdmf Version="2.0" xmlns:xi="[http://www.w3.org/2001/XInclude]">
+    write!(xdmf, r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE Xdmf SYSTEM "Xdmf.dtd" []>
+<Xdmf Version="2.0" xmlns:xi="http://www.w3.org/2001/XInclude">
 <Domain>
-    <Topology name="topo" TopologyType="2DRectMesh"
+    <Topology name="topo" TopologyType="2DCoRectMesh"
         Dimensions="{topology_x_dim:} {topology_y_dim:}">
     </Topology>
-    <Geometry name="geo" Type="XYZ">
+    <Geometry name="geo" Type="ORIGIN_DXDYDZ">
         <DataItem Format="XML" Dimensions="3">
         0.0 0.0 0.0
+        </DataItem>
+        <DataItem Format="XML" Dimensions="3">
+        {dx:} {dy:} 1.0
         </DataItem>
     </Geometry>
 
@@ -132,13 +144,16 @@ impl Xdmf {
             </DataItem>
         </Time>
 "#,
-           step_count = self.steps.len(),
+           dx = grid.dx(),
+           dy = grid.dy(),
+           step_count = self.steps.len() - 1,
            topology_x_dim = grid.dim().0,
            topology_y_dim = grid.dim().1)
       .unwrap();
 
     for &(_, ref path) in self.steps.iter() {
-      writeln!(xdmf, "<xi:include href=\"{path:}\" parse=\"xml\" />",
+      writeln!(xdmf,
+               "\t\t<xi:include href=\"{path:}\" parse=\"xml\" />",
                path = path.display())
         .unwrap();
     }

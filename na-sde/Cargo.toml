@@ -1,0 +1,12 @@
+[package]
+authors = ["Richard Diamond <wichard@vitalitystudios.com>"]
+name = "na-sde"
+version = "0.1.0"
+
+[dependencies]
+linxal = "0.6.0"
+num-traits = "0.1.37"
+
+[dependencies.na-core]
+optional = false
+path = "../na-core"

@@ -7,8 +7,14 @@ version = "0.1.0"
 ndarray = "^0.9"
 ndarray-parallel = "^0.3"
 num-traits = "^0.1"
+pbr = "1.0.0"
 rand = "^0.3"
 rayon = "^0.7"
+
+[dependencies.linxal]
+default-features = false
+features = ["netlib"]
+version = "^0.6"
 
 [dependencies.na-discrete-filtering]
 optional = false
@@ -17,8 +23,3 @@ path = "../na-discrete-filtering"
 [dependencies.na-quadrature]
 optional = false
 path = "../na-quadrature"
-
-[dependencies.linxal]
-version = "^0.6"
-default-features = false
-features = ["netlib"]

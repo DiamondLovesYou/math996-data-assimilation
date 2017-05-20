@@ -10,19 +10,25 @@ extern crate num_traits;
 extern crate num_complex;
 extern crate rayon;
 extern crate ndarray_parallel as nd_par;
+extern crate na_core as nac;
+
+#[cfg(test)]
+extern crate gnuplot;
 
 use rand::Rng;
-use nd::{ArrayViewMut, ArrayView, Ix1, Ix2};
+use nd::{ArrayViewMut, ArrayView, Ix1, Ix2, ArrayBase, Data};
 
-pub use error::Result;
+pub use nac::error;
+pub use nac::error::Result;
+pub use nac::{Model, ModelStats, Operator, LinearizedOperator};
 
-pub mod error;
 
 pub mod utils;
 pub mod variational;
 pub mod kalman;
 pub mod ensemble;
 pub mod forcing;
+pub mod particle;
 
 /// In the example programs provided in Data Assimilation:
 /// A Mathematical Introduction, the algorithm assumes the
@@ -82,37 +88,23 @@ pub trait Algorithm<M, Ob>: Sized
                -> Result<()>;
 }
 
-pub trait Model<E>: Send + Sync {
-  /// Will be called once.
-  fn workspace_size(&self) -> usize;
-  fn run_model(&self, step: u64,
-               workspace: ArrayViewMut<E, Ix1>,
-               mean: ArrayView<E, Ix1>,
-               out: ArrayViewMut<E, Ix1>);
-}
-#[derive(Debug)]
-pub struct ModelStats<M> {
-  pub model: M,
-  pub calls: u64,
-}
-impl<M> From<M> for ModelStats<M> {
-  fn from(v: M) -> ModelStats<M> {
-    ModelStats {
-      model: v,
-      calls: 0,
-    }
-  }
+pub trait Observer<E, Dim>: Send + Sync
+  where Dim: nd::Dimension,
+{
+  fn observe_into(&self, step: u64, out: ArrayViewMut<E, Dim>) -> bool;
 }
 
-pub trait Observer<E> {
-  fn observe_into(&self, step: u64, out: ArrayViewMut<E, Ix1>) -> bool;
-}
-pub trait ObservationOperator<E> {
-  fn eval_at(&self, x: ArrayView<E, Ix1>, out: ArrayViewMut<E, Ix1>) -> Result<()>;
-}
-pub trait LinearizedObservationOperator<E>: Send + Sync {
-  fn space_dim() -> usize;
-  fn eval_jacobian_at(&self,
-                      x: ArrayView<E, Ix1>,
-                      out: ArrayViewMut<E, Ix2>) -> Result<()>;
+
+pub struct SimpleObserver<D>(pub ArrayBase<D, Ix2>)
+  where D: Data;
+impl<D> Observer<D::Elem, Ix1> for SimpleObserver<D>
+  where D: Data + Send + Sync,
+        D::Elem: Clone,
+{
+  fn observe_into(&self, idx: u64,
+                  mut out: ArrayViewMut<D::Elem, Ix1>) -> bool {
+    out.assign(&self.0.subview(nd::Axis(0),
+                               idx as usize));
+    true
+  }
 }

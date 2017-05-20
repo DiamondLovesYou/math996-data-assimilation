@@ -84,7 +84,7 @@ pub fn make_ensemble_plots<T>(source: &T, states: &StateSteps,
   all.show();
 }
 
-pub fn make_3d_plot(name: &str, fsuffix: &str,
+pub fn make_3d_plot(_name: &str, fsuffix: &str,
                     plots: &[(&str, ArrayView<f64, Ix2>)]) {
   let current_exe = ::std::env::current_exe().unwrap();
   let pname = current_exe

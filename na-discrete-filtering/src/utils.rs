@@ -1,13 +1,17 @@
 
 use nd::{ArrayBase, Ix0, Ix1, Ix2, Array, Data, DataMut, ViewRepr, ArrayView, ArrayViewMut, Axis};
+use nd_par::prelude::*;
 use linxal::factorization::cholesky::*;
 use linxal::eigenvalues::Solution;
 use linxal::types::Symmetric;
 use linxal::types::{LinxalImplScalar, c32, c64};
 use num_complex::Complex;
-use num_traits::Float;
+use num_traits::{Float, Zero, One, NumCast};
 
-use std::ops::Index;
+use rand::Rng;
+use rand::distributions::{Normal, IndependentSample};
+
+use std::ops::{Index, MulAssign};
 
 pub trait CholeskyLDL: Cholesky + Sized {
   fn compute<D1: Data>(a: &ArrayBase<D1, Ix2>, uplo: Symmetric)
@@ -175,13 +179,13 @@ pub trait PartialEqWithinTol<Rhs, Tol> {
 }
 
 impl PartialEqWithinTol<f64, f64> for f64 {
-  const STD_TOL: Self = ::std::f64::consts::E;
+  const STD_TOL: Self = ::std::f64::EPSILON;
   fn partial_eq_within_tol(&self, rhs: &f64, tol: f64) -> bool {
     (self - rhs).mag() <= tol
   }
 }
 impl PartialEqWithinTol<f32, f32> for f32 {
-  const STD_TOL: Self = ::std::f32::consts::E;
+  const STD_TOL: Self = ::std::f32::EPSILON;
   fn partial_eq_within_tol(&self, rhs: &f32, tol: f32) -> bool {
     (self - rhs).mag() <= tol
   }
@@ -205,4 +209,43 @@ impl<'a, T> PartialEqWithinTol<ArrayView<'a, T, Ix1>, T> for ArrayView<'a, T, Ix
         l.partial_eq_within_tol(&r, tol)
       })
   }
+}
+
+pub fn par_conj_t<E>(dest: &mut ArrayViewMut<E, Ix2>, src: &ArrayView<E, Ix2>)
+  where E: LinxalImplScalar + Send + Sync,
+{
+  assert_eq!(dest.dim().0, src.dim().1);
+  assert_eq!(dest.dim().1, src.dim().0);
+
+  dest.axis_iter_mut(Axis(0))
+    .into_par_iter()
+    .zip(src.axis_iter(Axis(1)).into_par_iter())
+    .for_each(|(mut dest, src)| {
+      dest.axis_iter_mut(Axis(0))
+        .into_par_iter()
+        .zip(src.axis_iter(Axis(0)).into_par_iter())
+        .for_each(|(mut dest, src)| {
+          dest[()] = src[()].cj();
+        });
+    });
+}
+
+pub fn make_2d_randn<E, R>(dim: (usize, usize),
+                           d: Diagonal<E>,
+                           mut rand: &mut R) -> Array<E, Ix2>
+  where E: LinxalImplScalar + MulAssign + Zero + One + NumCast,
+        R: Rng,
+{
+  let normal = Normal::new(Zero::zero(), One::one());
+  let mut r: Array<E, Ix2> =
+    ArrayBase::zeros(dim);
+  for i in 0..dim.0 {
+    for j in 0..dim.1 {
+      r[[i, j]] = NumCast::from(normal.ind_sample(&mut rand))
+        .unwrap();
+      r[[i, j]] *= d[j];
+    }
+  }
+
+  r
 }

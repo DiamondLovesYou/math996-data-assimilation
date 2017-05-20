@@ -1,9 +1,10 @@
 
 use num_traits::Float;
 
-use nd::{Array, ArrayView, ArrayViewMut, Ix1, Ix2, Axis};
+use nd::{Array, ArrayView, ArrayViewMut, Ix1, Ix2, Ix3, Axis};
 use nd::{self, Zip, aview1, aview2};
 use nd_par::prelude::*;
+use rayon::prelude::*;
 
 use na_df;
 
@@ -98,7 +99,7 @@ impl SweModel {
              dx_dy: Option<(f64, f64)>,
              gravity: Option<f64>) -> SweModel {
     let coriolis_parameter = coriolis_parameter.unwrap_or(0.0001);
-    let beta = beta.unwrap_or((1.6).powi(11).recip());
+    let beta = beta.unwrap_or(1.6 * (10.0).powi(-11));
     let grid_dim = grid_dim.unwrap_or(STD_GRID_SIZE);
     let dt = dt.unwrap_or(STD_DT);
     let (dx, dy) = dx_dy.unwrap_or(STD_DX_DY);
@@ -114,7 +115,7 @@ impl SweModel {
     let orography = match orography {
       Orography::GaussianMountain {
         std_dev: (stdmx, stdmy),
-        scale: scale,
+        scale,
       } => {
         let mut h = &mesh.x_varying() - &aview2(&[[mesh.xmean]]);
         h /= stdmx;
@@ -177,11 +178,10 @@ impl SweModel {
         mean_height,
       } => {
         h.assign(&mesh.y_varying());
-        h -= &aview2(&[[mesh.ymean]]);
-        h *= 20.0 * mesh.y_max();
-        h.par_mapv_inplace(f64::tanh);
-        h *= 400.0;
-        h.par_mapv_inplace(|v| mean_height - v );
+        h.par_mapv_inplace(|v| {
+          let v = 20.0 * ((v - mesh.ymean) / mesh.y_max());
+          mean_height - v.tanh() * 400.0
+        });
       }
     }
 
@@ -224,18 +224,22 @@ impl SweModel {
     par_scaled_add_sq(capv_y.view_mut(), 0.5 * self.gravity, h.view());
     let capv_y = capv_y;
 
-    fn lsv<'a>(idx: usize, h: &'a ArrayView<'a, f64, Ix2>) -> ArrayView<'a, f64, Ix2> {
-      match idx {
-        0 | 1 => h.slice(s![1..h.dim().0 as isize, ..]),
-        2 | 3 => h.slice(s![.., 1..h.dim().1 as isize]),
-        _ => unreachable!(),
+    macro_rules! lsv {
+      ($idx:expr, $h:expr) => {
+        $h.slice(&match $idx {
+          0 | 1 => *s![1..$h.dim().0 as isize, ..],
+          2 | 3 => *s![.., 1..$h.dim().1 as isize],
+          _ => unreachable!(),
+        })
       }
     }
-    fn rsv<'a>(idx: usize, h: &'a ArrayView<'a, f64, Ix2>) -> ArrayView<'a, f64, Ix2> {
-      match idx {
-        0 | 1 => h.slice(s![..h.dim().0 as isize - 1, ..]),
-        2 | 3 => h.slice(s![.., ..h.dim().1 as isize - 1]),
-        _ => unreachable!(),
+    macro_rules! rsv {
+      ($idx:expr, $h:expr) => {
+        $h.slice(&match $idx {
+          0 | 1 => *s![..$h.dim().0 as isize - 1, ..],
+          2 | 3 => *s![.., ..$h.dim().1 as isize - 1],
+          _ => unreachable!(),
+        })
       }
     }
 
@@ -243,35 +247,71 @@ impl SweModel {
                                nonlinear_term: ArrayView<f64, Ix2>,
                                jacobi0: ArrayView<f64, Ix2>,
                                jacobi1: ArrayView<f64, Ix2>)
-      -> (Array<f64, Ix2>, Array<f64, Ix2>)
+      -> [Array<f64, Ix2>; 2]
     {
-      let mut mid_xt = &lsv(0, &nonlinear_term.view()) * 0.5;
-      par_scaled_add(mid_xt.view_mut(), 0.5, rsv(0, &nonlinear_term.view()));
-      let f = -0.5 * this.dt() / this.dx();
-      par_scaled_add(mid_xt.view_mut(), f, lsv(1, &jacobi0.view()));
-      par_scaled_add(mid_xt.view_mut(), -f, rsv(1, &jacobi0.view()));
+      let fx = -0.5 * this.dt() / this.dx();
+      let fy = -0.5 * this.dt() / this.dy();
+      let factorsx = [
+        0.5, 0.5,
+        fx, -fx,
+      ];
+      let factorsy = [
+        0.5, 0.5,
+        fy, -fy,
+      ];
+      let factors = [
+        factorsx, factorsy,
+      ];
+      let factors = aview2(&factors[..]);
 
-      let mut mid_yt = &lsv(2, &nonlinear_term.view()) * 0.5;
-      par_scaled_add(mid_yt.view_mut(), 0.5, rsv(2, &nonlinear_term.view()));
-      let f = -0.5 * this.dt() / this.dy();
-      par_scaled_add(mid_yt.view_mut(), f, lsv(3, &jacobi1.view()));
-      par_scaled_add(mid_yt.view_mut(), -f, rsv(3, &jacobi1.view()));
+      let lhsx = &[
+        lsv!(0, nonlinear_term), rsv!(0, nonlinear_term),
+        lsv!(1, jacobi0),        rsv!(1, jacobi0),
+      ];
+      let lhsy = &[
+        lsv!(2, nonlinear_term), rsv!(2, nonlinear_term),
+        lsv!(3, jacobi1),        rsv!(3, jacobi1),
+      ];
 
-      (mid_xt, mid_yt)
+      let lhss = [
+        lhsx, lhsy,
+      ];
+
+      let dim = nonlinear_term.dim();
+      let mid_x = Array::zeros((dim.0 - 1, dim.1));
+      let mid_y = Array::zeros((dim.0, dim.1 - 1));
+
+      let mut mid = [
+        mid_x,
+        mid_y,
+      ];
+      mid.par_iter_mut()
+        .enumerate()
+        .zip(factors.axis_iter(A0).into_par_iter())
+        .for_each(|((idx, mut mid), factors)| {
+          par_multi_scaled_multi_add(mid.view_mut(),
+                                     factors,
+                                     lhss[idx]);
+        });
+
+      mid
     }
 
-    let (h_mid_xt, h_mid_yt) = calculate_midpoint_pair(self,
-                                                       h.view(),
-                                                       uh.view(),
-                                                       vh.view());
-    let (uh_mid_xt, uh_mid_yt) = calculate_midpoint_pair(self,
-                                                         uh.view(),
-                                                         capu_x.view(),
-                                                         capu_y.view());
-    let (vh_mid_xt, vh_mid_yt) = calculate_midpoint_pair(self,
-                                                         vh.view(),
-                                                         capv_x.view(),
-                                                         capv_y.view());
+    let h_mid = calculate_midpoint_pair(self,
+                                        h.view(),
+                                        uh.view(),
+                                        vh.view());
+    let uh_mid = calculate_midpoint_pair(self,
+                                         uh.view(),
+                                         capu_x.view(),
+                                         capu_y.view());
+    let vh_mid = calculate_midpoint_pair(self,
+                                         vh.view(),
+                                         capv_x.view(),
+                                         capv_y.view());
+    let (h_mid_xt, h_mid_yt) = (&h_mid[0], &h_mid[1]);
+    let (uh_mid_xt, uh_mid_yt) = (&uh_mid[0], &uh_mid[1]);
+    let (vh_mid_xt, vh_mid_yt) = (&vh_mid[0], &vh_mid[1]);
 
     #[inline(always)]
     fn indices((xend, yend): (usize, usize)) -> [[nd::Si; 2]; 4] {
@@ -302,14 +342,14 @@ impl SweModel {
     par_scaled_add(next_h.view_mut(), -dtdy, vh_mid_yt.slice(&idxs[2]));
     par_scaled_add(next_h.view_mut(), dtdy, vh_mid_yt.slice(&idxs[3]));
 
-    let mut capu_x_mid_xt = &uh_mid_xt * &uh_mid_xt;
-    capu_x_mid_xt /= &h_mid_xt;
+    let mut capu_x_mid_xt = uh_mid_xt * uh_mid_xt;
+    capu_x_mid_xt /= h_mid_xt;
     par_scaled_add_sq(capu_x_mid_xt.view_mut(), 0.5 * self.gravity,
                       h_mid_xt.view());
     let capu_x_mid_xt = capu_x_mid_xt;
 
-    let mut capu_y_mid_yt = &uh_mid_yt * &vh_mid_yt;
-    capu_y_mid_yt /= &h_mid_yt;
+    let mut capu_y_mid_yt = uh_mid_yt * vh_mid_yt;
+    capu_y_mid_yt /= h_mid_yt;
     let capu_y_mid_yt = capu_y_mid_yt;
 
     let xidxs = indices(capu_x_mid_xt.dim());
@@ -334,12 +374,12 @@ impl SweModel {
         *next_uh /= next_h;
       });
 
-    let mut capv_x_mid_xt = &uh_mid_xt * &vh_mid_xt;
-    capv_x_mid_xt /= &h_mid_xt;
+    let mut capv_x_mid_xt = uh_mid_xt * vh_mid_xt;
+    capv_x_mid_xt /= h_mid_xt;
     let capv_x_mid_xt = capv_x_mid_xt;
 
-    let mut capv_y_mid_yt = &vh_mid_yt * &vh_mid_yt;
-    capv_y_mid_yt /= &h_mid_yt;
+    let mut capv_y_mid_yt = vh_mid_yt * vh_mid_yt;
+    capv_y_mid_yt /= h_mid_yt;
     par_scaled_add_sq(capv_y_mid_yt.view_mut(), 0.5 * self.gravity,
                       h_mid_yt.view());
     let capv_y_mid_yt = capv_y_mid_yt;
@@ -382,9 +422,10 @@ impl na_df::Model<f64> for SweModel {
       .expect("failed to reshape flat state into Ix3");
     let mut out = flat_out.into_shape(self.state_shape())
       .expect("failed to reshape flat output state into Ix3");
-    let mut ws = flat_ws.into_shape(self.workspace_shape())
+    let ws = flat_ws.into_shape(self.workspace_shape())
       .expect("failed to reshape flat workspace into Ix3");
 
+    if step != 0 { panic!(); }
 
     let (u, v, h) = {
       let (u, rest) = grid.view().split_at(A0, 1);
@@ -405,9 +446,13 @@ impl na_df::Model<f64> for SweModel {
 
     let bd_idx = s![1..self.grid_size.0 as isize - 1,
                     1..self.grid_size.1 as isize - 1];
-    let cps_bd = self.coriolis_parameters.slice(bd_idx);
+    let cps_bd = self.coriolis_parameters
+      .slice(bd_idx);
     let u_bd = u.slice(bd_idx);
     let v_bd = v.slice(bd_idx);
+
+    println!("u[(0,0)] = {:.16e}", u_bd[(0,0)]);
+    println!("v[(0,0)] = {:.16e}", v_bd[(0,0)]);
 
     let (mut u_accel0, mut v_accel0) = ws.split_at(A0, 1);
     let mut u_accel = u_accel0.subview_mut(A0, 0);
@@ -430,10 +475,16 @@ impl na_df::Model<f64> for SweModel {
     let u_factor = -self.gravity / (2.0 * self.dx());
     let v_factor = -self.gravity / (2.0 * self.dy());
 
-    par_scaled_add(u_accel.view_mut(), u_factor, h.slice(h_idxs[0]));
-    par_scaled_add(u_accel.view_mut(), -u_factor, h.slice(h_idxs[1]));
-    par_scaled_add(v_accel.view_mut(), v_factor, h.slice(h_idxs[2]));
-    par_scaled_add(v_accel.view_mut(), -v_factor, h.slice(h_idxs[3]));
+    par_scaled_add(u_accel.view_mut(), u_factor,
+                   self.orography.slice(h_idxs[0]));
+    par_scaled_add(u_accel.view_mut(), -u_factor,
+                   self.orography.slice(h_idxs[1]));
+    par_scaled_add(v_accel.view_mut(), v_factor,
+                   self.orography.slice(h_idxs[2]));
+    par_scaled_add(v_accel.view_mut(), -v_factor,
+                   self.orography.slice(h_idxs[3]));
+
+    println!("v_accel: {:?}", v_accel[(0,0)]);
 
     {
       let crop = s![1..xend - 1, 1..yend - 1];

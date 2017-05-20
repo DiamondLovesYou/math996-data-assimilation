@@ -1,7 +1,7 @@
 
 use linxal::types::{LinxalImplScalar};
 
-use nd::{ArrayViewMut, ArrayView, Ix1, Ix2};
+use nd::{ArrayViewMut, Ix2};
 
 use rand::Rng;
 use rand::distributions::IndependentSample;

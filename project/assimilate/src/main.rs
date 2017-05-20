@@ -37,15 +37,8 @@ const INITIALLY_GEOSTROPHIC: bool = true;
 fn max<T: PartialOrd>(a: T, b: T) -> T { if a > b { a } else { b } }
 fn min<T: PartialOrd>(a: T, b: T) -> T { if a < b { a } else { b } }
 
-pub fn test_l95() {
-
-}
-
 pub fn main() {
   use lax_wendroff::{SweModel, STD_GRID_SIZE, STD_DX_DY, STD_DT};
-
-  //test_l95();
-  //return;
 
   const FORECAST_LENGTH_DAYS: f64 = 2.0;
   const FORECAST_STEPS: u64 = (FORECAST_LENGTH_DAYS * 24.0 * 3600.0 / STD_DT) as u64 + 1;
@@ -137,12 +130,23 @@ pub fn main() {
 
     {
       let s = state.subview(Axis(0), 0);
-      let s0 = s.subview(Axis(0), H_IDX);
-      xdmf.next_timestep(i, &mesh, s0);
-
       let u = s.subview(Axis(0), U_IDX);
-      let flat_u = u.into_shape(u.dim().0 * u.dim().1).unwrap();
       let v = s.subview(Axis(0), V_IDX);
+      let h = s.subview(Axis(0), H_IDX);
+
+      let ut = u.t().to_owned();
+      let vt = v.t().to_owned();
+      let mut total_h = h.t().to_owned();
+      total_h += &caph.t();
+
+      xdmf.next_timestep(i, &mesh, &[
+        ("h", total_h.view()),
+        ("u", ut.view()),
+        ("v", vt.view()),
+      ]);
+
+
+      let flat_u = u.into_shape(u.dim().0 * u.dim().1).unwrap();
       let flat_v = v.into_shape(v.dim().0 * v.dim().1).unwrap();
 
       let maxu = flat_u.axis_iter(Axis(0)).into_par_iter()
@@ -156,7 +160,7 @@ pub fn main() {
 
       println!("Time = {}, max(|u|) = {}",
                (i as f64 * STD_DT / 3600.0) as u64,
-               maxu);
+               maxu.sqrt());
     }
 
 
@@ -172,26 +176,14 @@ pub fn main() {
         .unwrap();
 
       next_state.fill(0.0);
-      swe.run_model(i, ws.view_mut(), current_state.view(),
+      swe.run_model(i * CHECKPOINT_INTERVAL + j,
+                    ws.view_mut(),
+                    current_state.view(),
                     next_state.view_mut());
 
       current_state.assign(&next_state);
     }
   }
 
-
-  let mut fig = Figure::new();
-  fig.set_terminal("wxt", "");
-
-  {
-    let mut a = fig.axes3d();
-
-    let plot_dims = Some((0.0, 0.0, mesh.x_max(), mesh.y_max()));
-    let h0 = state.subview(Axis(0), 0);
-    let h = h0.subview(Axis(0), H_IDX);
-    a.surface(h.iter(), h.dim().0, h.dim().1, plot_dims,
-              &[PlotOption::Caption("height"),]);
-  }
-
-  fig.show();
+  xdmf.run_complete(&mesh);
 }

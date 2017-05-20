@@ -7,21 +7,23 @@ use linxal::solve_linear::general::SolveLinear;
 use num_traits::{NumCast, One, Zero, Float};
 use num_complex::Complex;
 use rand::Rng;
-use rand::distributions::{Sample, IndependentSample};
+use rand::distributions::{Sample};
 use rand::distributions::normal::Normal;
 use std::ops::{Add, Sub, Mul, Div,
                AddAssign, SubAssign,
                DivAssign, MulAssign,};
 
-use {Algorithm};
-use utils::{Sqrt, Exp, SolutionHelper};
+use {Algorithm, Result};
+use utils::{Sqrt, Exp, Diagonal};
 use rayon::prelude::*;
 use nd_par::prelude::*;
 
-use super::super::{ResampleForcing, EnsembleWorkspace,
-                   EnsemblePredictModelStuff, EnsemblePredict};
+use ensemble::{EnsemblePredict, EnsemblePredictModelStuff,
+               EnsembleWorkspace, EnsembleCommonState,
+               EnsembleCommonInit, };
+use forcing::ResampleForcing;
 
-pub use super::super::etkf::{Init};
+pub use kalman::etkf::Init;
 
 #[derive(Debug)]
 pub struct Workspace<E>
@@ -56,15 +58,20 @@ impl<'a, E> ::Workspace<Init<'a, E>> for Workspace<E>
         E: Mul<<E as LinxalImplScalar>::RealPart, Output = E> + Div<<E as LinxalImplScalar>::RealPart, Output = E>,
         E: MulAssign<<E as LinxalImplScalar>::RealPart> + DivAssign<<E as LinxalImplScalar>::RealPart>,
 {
-  fn alloc(i: Init<'a, E>, mut rand: &mut Rng, _: u64) -> Workspace<E> {
+  fn alloc(i: Init<'a, E>, mut rand: &mut Rng, _: u64) -> Result<Workspace<E>> {
     let Init {
-      initial_mean,
-      initial_covariance,
-      ensemble_count,
-      observation_operator,
+      common: EnsembleCommonInit {
+        mean,
+        covariance,
+        ensemble_count,
+        observation_operator,
+        ..
+      },
       model_workspace_size,
       ..
     } = i;
+    let initial_mean = mean;
+    let initial_covariance = covariance;
 
     let mut normal = Normal::new(Zero::zero(), One::one());
 
@@ -106,7 +113,7 @@ impl<'a, E> ::Workspace<Init<'a, E>> for Workspace<E>
 
     m.assign(&m0);
 
-    Workspace {
+    let w = Workspace {
       mean: m,
       covariance: c,
       ensembles: ensembles,
@@ -119,7 +126,8 @@ impl<'a, E> ::Workspace<Init<'a, E>> for Workspace<E>
       ensemble_innovation: ArrayBase::zeros((observation_operator.dim().0,
                                              ensemble_count)),
       centered_ensemble: ArrayBase::zeros((n, ensemble_count)),
-    }
+    };
+    Ok(w)
   }
 }
 
@@ -127,15 +135,22 @@ impl<E> ResampleForcing<E> for Workspace<E>
   where E: LinxalImplScalar + From<f64>,
         E: MulAssign<<E as LinxalImplScalar>::RealPart>,
 {
-  fn forcing_view_mut(&mut self) -> ArrayViewMut<E, Ix2> { self.forcing.view_mut() }
+  type Disc = ();
+  fn forcing_view_mut(&mut self, _: ()) -> ArrayViewMut<E, Ix2> { self.forcing.view_mut() }
 }
 
 impl<E> EnsembleWorkspace<E> for Workspace<E>
   where E: LinxalImplScalar,
 {
-  fn mean_view(&self) -> ArrayView<E, Ix1> { self.mean.view() }
-  fn covariance_view(&self) -> ArrayView<E, Ix2> { self.covariance.view() }
-  fn ensembles_view(&self) -> ArrayView<E, Ix2> { self.ensembles.view() }
+  fn ensemble_state(&self) -> EnsembleCommonState<E> {
+    EnsembleCommonState {
+      state: ::State {
+        mean: self.mean.view(),
+        covariance: self.covariance.view(),
+      },
+      ensembles: self.ensembles.view(),
+    }
+  }
 }
 impl<E> EnsemblePredict<E> for Workspace<E>
   where E: LinxalImplScalar + Send + Sync + AddAssign<E> + NumCast,
@@ -166,7 +181,7 @@ pub struct Algo<'a, E>
 impl<'init, 'state, E, M, Ob>
 Algorithm<M, Ob> for Algo<'init, E>
   where M: ::Model<E>,
-        Ob: ::Observer<E> + Send + Sync,
+        Ob: ::Observer<E, Ix1> + Send + Sync,
         E: LinxalImplScalar<Complex = Complex<<E as LinxalImplScalar>::RealPart>>,
         Complex<<E as LinxalImplScalar>::RealPart>: LinxalImplScalar,
         E: From<f64> + PartialOrd + Eigen,
@@ -189,14 +204,14 @@ Algorithm<M, Ob> for Algo<'init, E>
           _rand: &mut Rng,
           _model: &mut ::ModelStats<M>,
           _observer: &Ob,
-          _: u64) -> Self
+          _: u64) -> Result<Self>
   {
-    Algo {
+    Ok(Algo {
       ensemble_count: i.ensemble_count,
       gamma: i.gamma.clone(),
       sigma: i.sigma.clone(),
       observation_operator: i.observation_operator.clone(),
-    }
+    })
   }
 
   fn next_step(&self,
@@ -206,7 +221,7 @@ Algorithm<M, Ob> for Algo<'init, E>
                workspace: &mut Workspace<E>,
                model: &mut ::ModelStats<M>,
                observer: &Ob)
-               -> Result<(), ()>
+               -> Result<()>
   {
     use nd::linalg::general_mat_mul;
 
@@ -220,7 +235,8 @@ Algorithm<M, Ob> for Algo<'init, E>
     // predict
 
     workspace.ensemble_predict.fill(Zero::zero());
-    workspace.resample_forcing(self.sigma.view(),
+    workspace.resample_forcing((),
+                               Diagonal::from(self.sigma.view()),
                                &mut normal,
                                &mut rand);
     workspace.ensemble_predict(current_step, model);

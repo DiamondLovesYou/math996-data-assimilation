@@ -5,7 +5,7 @@ use linxal::types::{LinxalImplScalar};
 use nd::{ArrayView, ArrayViewMut, Ix1, Ix2, Axis, Zip};
 use nd_par::prelude::*;
 
-use std::ops::{Deref, AddAssign, Add, DivAssign, Div, };
+use std::ops::{Deref, AddAssign, Add, DivAssign, };
 use num_traits::{Zero, NumCast};
 
 #[derive(Debug, Clone)]
@@ -110,16 +110,13 @@ pub trait EnsemblePredict<E>
       .zip(ensemble_predict.axis_iter_mut(ensembles_axis).into_par_iter())
       .zip(forcing.axis_iter(Axis(1)).into_par_iter())
       .map(|(((ensemble, model_ws), out), forcing)| (ensemble, model_ws, out, forcing) )
-      .with_min_len(64)
       .for_each(|(ensemble, model_ws, mut out, forcing)| {
         model.model.run_model(step, model_ws, ensemble, out.view_mut());
 
-        out.axis_iter_mut(Axis(0))
-          .into_par_iter()
-          .zip(forcing.axis_iter(Axis(0)).into_par_iter())
-          .with_min_len(16)
-          .for_each(|(mut out, forcing)| {
-            out[()] += forcing[()];
+        Zip::from(&mut out)
+          .and(&forcing)
+          .par_apply(|out, &forcing| {
+            *out += forcing;
           });
       });
 

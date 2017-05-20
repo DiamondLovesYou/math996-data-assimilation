@@ -9,12 +9,14 @@ extern crate rand;
 extern crate rayon;
 extern crate num_traits;
 extern crate linxal;
+extern crate pbr;
 
 use nd::{ArrayView, Array, Axis, Ix2, Ix3};
 
 use std::marker::PhantomData;
 
 pub mod data;
+pub mod progress;
 
 pub trait ModelTruth<E> {
   fn truth(&self) -> ArrayView<E, Ix2>;
@@ -100,6 +102,9 @@ impl MeshGrid {
   pub fn x_max(&self) -> f64 { self.dim().0 as f64 * self.scale.0 }
   pub fn y_max(&self) -> f64 { self.dim().1 as f64 * self.scale.1 }
 
+  pub fn dx(&self) -> f64 { self.scale.0 }
+  pub fn dy(&self) -> f64 { self.scale.1 }
+
   pub fn x_varying(&self) -> ArrayView<f64, Ix2> {
     self.grid.subview(Axis(0), 0)
   }
@@ -118,26 +123,16 @@ pub fn meshgrid(x: usize, x_scale: f64, y: usize, y_scale: f64) -> MeshGrid {
     let mut y_grid = y_grid0.subview_mut(Axis(0), 0);
     for i in 0..x {
       for j in 0..y {
-        x_grid[(i, j)] = (j as f64) * x_scale;
-        y_grid[(i, j)] = (i as f64) * y_scale;
+        x_grid[(i, j)] = (i as f64) * x_scale;
+        y_grid[(i, j)] = (j as f64) * y_scale;
       }
     }
   }
 
-  let xmean = (0..x)
-    .skip(1)
-    .fold(0.0, |avg, dc| {
-      let sum = avg * (dc as f64 - 1.0) + (dc as f64) * x_scale;
-      let avg = sum / (dc as f64);
-      avg
-    });
-  let ymean = (0..y)
-    .skip(1)
-    .fold(0.0, |avg, dc| {
-      let sum = avg * (dc as f64 - 1.0) + (dc as f64) * y_scale;
-      let avg = sum / (dc as f64);
-      avg
-    });
+  let xsum: usize = (0..x).sum();
+  let ysum: usize = (0..y).sum();
+  let xmean = (xsum as f64 * x_scale) / (x as f64);
+  let ymean = (ysum as f64 * y_scale) / (y as f64);
 
   MeshGrid {
     grid: grid,

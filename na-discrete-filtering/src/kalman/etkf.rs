@@ -10,7 +10,7 @@ use linxal::eigenvalues::general::Eigen;
 use num_traits::{NumCast, One, Zero, Float};
 use num_complex::Complex;
 use rand::Rng;
-use rand::distributions::{Sample, IndependentSample};
+use rand::distributions::{Sample};
 use rand::distributions::normal::Normal;
 use std::ops::{Add, Sub, Mul, Div,
                AddAssign, SubAssign,
@@ -32,7 +32,7 @@ pub use super::super::ensemble::EnsembleCommonState as State;
 pub use super::Model;
 
 pub struct Init<'a, E>
-where E: LinxalImplScalar,
+  where E: LinxalImplScalar,
 {
   pub common: EnsembleCommonInit<'a, E>,
   pub model_workspace_size: usize,
@@ -116,7 +116,7 @@ impl<'a, E> Workspace<Init<'a, E>> for OwnedWorkspace<E>
     let n = mean.dim();
 
     let mut m = mean.to_owned();
-    let mut c = covariance.to_owned();
+    let c = covariance.to_owned();
 
     let mut ensembles = ArrayBase::zeros((ensemble_count, n));
 
@@ -222,7 +222,7 @@ pub struct Algo<'a, E>
 
 impl<'init, 'state, E, M, Ob> Algorithm<M, Ob> for Algo<'init, E>
   where M: ::Model<E>,
-        Ob: ::Observer<E>,
+        Ob: ::Observer<E, Ix1>,
         E: LinxalImplScalar<Complex = Complex<<E as LinxalImplScalar>::RealPart>>,
         Complex<<E as LinxalImplScalar>::RealPart>: LinxalImplScalar,
         E: From<f64> + NumCast + SolveLinear + SymmetricSolveLinear + Send + Sync + Eigen + Float,

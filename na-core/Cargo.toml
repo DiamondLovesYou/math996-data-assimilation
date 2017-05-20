@@ -1,0 +1,15 @@
+[package]
+authors = ["Richard Diamond <wichard@vitalitystudios.com>"]
+name = "na-core"
+version = "0.1.0"
+
+[dependencies]
+ndarray = "0.9.1"
+ndarray-parallel = "0.3.0"
+num-traits = "0.1.37"
+rayon = "0.7.0"
+
+[dependencies.linxal]
+default-features = false
+features = ["netlib"]
+version = "^0.6"

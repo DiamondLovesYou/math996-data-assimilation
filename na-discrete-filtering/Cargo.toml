@@ -12,6 +12,13 @@ rand = "^0.3"
 rayon = "^0.7"
 
 [dependencies.linxal]
-version = "^0.6"
 default-features = false
 features = ["netlib"]
+version = "^0.6"
+
+[dependencies.na-core]
+optional = false
+path = "../na-core"
+
+[dev-dependencies]
+gnuplot = "0.0.22"

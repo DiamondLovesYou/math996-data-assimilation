@@ -1,6 +1,6 @@
 [package]
 authors = ["Richard Diamond <wichard@vitalitystudios.com>"]
-name = "sirs-std"
+name = "implicit-pf"
 version = "0.1.0"
 
 [dependencies]
@@ -9,7 +9,6 @@ ndarray = "0.9.1"
 ndarray-parallel = "0.3.0"
 num-traits = "0.1.37"
 rand = "0.3.15"
-rayon = "0.7.0"
 
 [dependencies.na-discrete-filtering]
 optional = false
@@ -18,6 +17,10 @@ path = "../../na-discrete-filtering"
 [dependencies.ninety-five]
 optional = false
 path = "../ninety-five"
+
+[dependencies.plot-helper]
+optional = false
+path = "../../plot-helper"
 
 [dependencies.sixty-three]
 optional = false
