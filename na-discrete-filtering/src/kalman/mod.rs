@@ -28,7 +28,7 @@ impl<E, F1, F2> Model<E, F1, F2>
   pub fn new(model: F1, observation: F2) -> Model<E, F1, F2> {
     Model {
       calls: 0,
-      model: model,
+      model,
       next_observation: observation,
     }
   }

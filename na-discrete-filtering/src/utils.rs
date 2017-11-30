@@ -211,19 +211,17 @@ impl<'a, T> PartialEqWithinTol<ArrayView<'a, T, Ix1>, T> for ArrayView<'a, T, Ix
   }
 }
 
-pub fn par_conj_t<E>(dest: &mut ArrayViewMut<E, Ix2>, src: &ArrayView<E, Ix2>)
+pub fn conj_t<E>(dest: &mut ArrayViewMut<E, Ix2>, src: &ArrayView<E, Ix2>)
   where E: LinxalImplScalar + Send + Sync,
 {
   assert_eq!(dest.dim().0, src.dim().1);
   assert_eq!(dest.dim().1, src.dim().0);
 
   dest.axis_iter_mut(Axis(0))
-    .into_par_iter()
-    .zip(src.axis_iter(Axis(1)).into_par_iter())
+    .zip(src.axis_iter(Axis(1)))
     .for_each(|(mut dest, src)| {
       dest.axis_iter_mut(Axis(0))
-        .into_par_iter()
-        .zip(src.axis_iter(Axis(0)).into_par_iter())
+        .zip(src.axis_iter(Axis(0)))
         .for_each(|(mut dest, src)| {
           dest[()] = src[()].cj();
         });

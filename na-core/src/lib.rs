@@ -70,7 +70,7 @@ impl<D, E> Operator<E, Ix1> for ArrayBase<D, Ix2>
 }
 impl<D, E> LinearizedOperator<E, Ix2> for ArrayBase<D, Ix2>
   where D: Data<Elem = E> + Send + Sync,
-        E: LinalgScalar + One + Send + Sync,
+        E: LinalgScalar + Send + Sync,
 {
   fn eval_jacobian_at(&self, _: ArrayView<E, Ix1>,
                       mut out: ArrayViewMut<E, Ix2>) -> Result<()> {

@@ -1,15 +1,6 @@
 
 extern crate ndarray as nd;
-extern crate ndarray_rand as nd_rand;
-extern crate ndarray_parallel as nd_par;
 extern crate na_discrete_filtering as na_df;
-extern crate na_quadrature as na_q;
-extern crate util;
-extern crate plot_helper;
-extern crate rand;
-extern crate gnuplot;
-extern crate num_traits;
-extern crate rayon;
 
 use nd::prelude::*;
 

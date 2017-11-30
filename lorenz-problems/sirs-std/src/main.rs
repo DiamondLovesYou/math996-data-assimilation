@@ -37,13 +37,13 @@ use l63::L63Model;
 const A0: nd::Axis = nd::Axis(0);
 const A1: nd::Axis = nd::Axis(1);
 
-const STEPS: usize = 80_000;
+const STEPS: usize = 8_000;
 const RNG_SEED: [u64; 3] = [1, 2, 3];
 const TOL: f64 = 0.000000005;
 const TAU: f64 = 0.0004;
 const THRESH: &'static [f64] = &[TOL; 3];
 
-const PLOT_MODULUS: usize = (STEPS / 10000) as usize;
+const PLOT_MODULUS: usize = (STEPS / 1000) as usize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum DataSet {

@@ -1,10 +1,4 @@
 
-[package]
-name = "math-996-data-assimilation"
-version = "0.0.0"
-
-[lib]
-
 [workspace]
 members = ["na-quadrature", "na-discrete-filtering", "na-pde",
            "na-sde", "na-core",

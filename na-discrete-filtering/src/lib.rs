@@ -1,5 +1,4 @@
 
-#![feature(associated_consts)]
 #![feature(associated_type_defaults)]
 
 #[macro_use]

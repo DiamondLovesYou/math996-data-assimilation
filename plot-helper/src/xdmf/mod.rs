@@ -5,8 +5,10 @@
 
 use util::MeshGrid;
 use nd::prelude::*;
+use nd::IntoDimension;
 
 use std::env::current_dir;
+use std::marker::PhantomData;
 use std::path::{PathBuf};
 
 use std::io::Write;
@@ -36,24 +38,45 @@ fn output_path(run_name: &'static str, filename: &str) -> PathBuf {
   outpath.to_path_buf()
 }
 
-#[derive(Debug, Default)]
-pub struct Xdmf {
-  run_name: &'static str,
-  complete: bool,
-  steps: Vec<(u64, PathBuf)>,
+pub struct Grid<D, S>
+  where D: Data,
+        S: Dimension,
+{
+  data: ArrayBase<D, S>,
 }
 
-impl Xdmf {
-  pub fn new(run_name: &'static str) -> Xdmf {
+#[derive(Debug, Clone)]
+pub struct TwoDSMesh
+pub trait StructuredTopology {}
+
+#[derive(Debug)]
+pub struct TemporalGrid<Elem, S>
+  where S: Dimension,
+{
+  run_name: &'static str,
+  shape: S,
+  complete: bool,
+  steps: Vec<(u64, PathBuf)>,
+  _p: PhantomData<Elem>
+}
+
+impl<Elem, S> TemporalGrid<Elem, S>
+  where S: Dimension,
+{
+  pub fn new<D>(run_name: &'static str,
+                shape: D) -> TemporalGrid<Elem, S>
+    where D: IntoDimension<Dim = S>,
+  {
     Xdmf {
       run_name: run_name,
+      shape: shape.into_dimension(),
       complete: false,
       steps: vec![],
+      _p: PhantomData,
     }
   }
-  pub fn next_timestep(&mut self, step: u64, grid: &MeshGrid,
-                       attributes: &[(&'static str,
-                                      ArrayView<f64, Ix2>)]) {
+  pub fn next_timestep(&mut self, step: u64,
+                       attributes: &[(&'static str, Grid<Elem, Ix2>)]) {
     assert!(!self.complete);
 
     let xdmfname = format!("timestep-{}.xdmf", step);

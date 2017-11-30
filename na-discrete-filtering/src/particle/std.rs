@@ -116,7 +116,7 @@ impl<'a, E> ::Workspace<Init<'a, E>> for Workspace<E>
     let w = Workspace {
       mean: m,
       covariance: c,
-      ensembles: ensembles,
+      ensembles,
 
       model_workspace: ArrayBase::zeros((ensemble_count, model_workspace_size)),
 
@@ -330,7 +330,8 @@ Algorithm<M, Ob> for Algo<'init, E>
       let u = workspace.ensembles.view();
 
       // estimator update
-      let scale: E::RealPart = NumCast::from(self.ensemble_count).unwrap();
+      let scale: E::RealPart =
+        NumCast::from(self.ensemble_count).unwrap();
       for i in 0..m.dim() {
         m[i] = Zero::zero();
         for k in 0..self.ensemble_count {
@@ -346,7 +347,8 @@ Algorithm<M, Ob> for Algo<'init, E>
         r.assign(&u.column(i));
         r.scaled_add(neg_one, &m.subview(Axis(0), i));
       }
-
+      let scale: E::RealPart =
+        NumCast::from(self.ensemble_count - 1).unwrap();
       general_mat_mul(NumCast::from(scale.recip()).unwrap(),
                       &xhat, &xhat.t(),
                       Zero::zero(),

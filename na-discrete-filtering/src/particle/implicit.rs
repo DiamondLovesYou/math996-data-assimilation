@@ -23,7 +23,7 @@ use num_complex::Complex;
 
 use error::{Result};
 use {ModelStats, LinearizedOperator, Observer, Model};
-use utils::{Sqrt, Exp, par_conj_t, PartialEqWithinTol,
+use utils::{Sqrt, Exp, conj_t, PartialEqWithinTol,
             make_2d_randn, Diagonal};
 
 const A0: Axis = Axis(0);
@@ -47,12 +47,14 @@ pub struct Init<D1, D2, D3, E, Obs, ObsOp>
   pub total_steps: u64,
 }
 
+/// m := state space dim.
 #[derive(Debug)]
 pub struct Workspace<E>
   where E: LinxalImplScalar,
 {
   pub mean: Array<E, Ix1>,
   pub covariance: Array<E, Ix2>,
+  /// particle_count x m
   pub particles: Array<E, Ix2>,
 
   pub observation: Array<E, Ix1>,
@@ -60,7 +62,7 @@ pub struct Workspace<E>
   pub fm_ws: Array<E, Ix2>,
   pub gm_ws: Array<E, Ix2>,
 
-  // vector of k N(0, 1) Gaussian variables, per particle.
+  /// vector of k N(0, 1) Gaussian variables, per particle.
   pub ksi: Array<E, Ix2>,
 
   /// diagonal matrix, m x m, per particle. Stored as (G^* * G)^-1
@@ -109,7 +111,7 @@ impl<FM, GM, E, ObsOp, Obs> Algo<FM, GM, E, ObsOp, Obs>
 
 impl<FM, GM, E, ObsOp, Obs> Algo<FM, GM, E, ObsOp, Obs>
   where E: LinxalImplScalar<Complex = Complex<<E as LinxalImplScalar>::RealPart>>,
-        E: NumCast + Sqrt + Exp + SolveLinear + Sum + Product,
+        E: NumCast + Sqrt + Exp + SolveLinear + Sum + Product + PartialOrd,
         E: Send + Sync + MulAssign + DivAssign + SubAssign + AddAssign,
         E: Cholesky + Eigen,
         E: PartialEqWithinTol<E, E>,
@@ -154,9 +156,9 @@ impl<FM, GM, E, ObsOp, Obs> Algo<FM, GM, E, ObsOp, Obs>
     let delta = one / NumCast::from(total_steps).unwrap();
 
     let mut cap_q_sqrd = cap_q.to_owned();
-    cap_q_sqrd.par_mapv_inplace(|v| v.cj() * v );
+    cap_q_sqrd.mapv_inplace(|v| v.cj() * v );
     let mut cap_q_sqrd_inv = cap_q_sqrd.to_owned();
-    cap_q_sqrd_inv.par_mapv_inplace(|v| one / v );
+    cap_q_sqrd_inv.mapv_inplace(|v| one / v );
 
     let mut particles = Array::zeros((particle_count, m));
     let sol = Eigen::compute_into(covariance.to_owned(),
@@ -169,7 +171,7 @@ impl<FM, GM, E, ObsOp, Obs> Algo<FM, GM, E, ObsOp, Obs>
     let mut d = Array::zeros(values.dim());
     Zip::from(&mut d)
       .and(&values)
-      .par_apply(|mut d, &eigen| {
+      .apply(|d, &eigen| {
         *d = eigen.re;
         *d = d._sqrt();
       });
@@ -181,16 +183,16 @@ impl<FM, GM, E, ObsOp, Obs> Algo<FM, GM, E, ObsOp, Obs>
     Zip::from(&mut particles)
       .and(&r)
       .and(&mean.broadcast((particle_count, m)).unwrap())
-      .par_apply(|mut p, &r, &m| {
+      .apply(|p, &r, &m| {
         *p = m + E::from_real(r);
       });
 
     let algo = Algo {
       step: 0,
-      total_steps: total_steps,
-      particle_count: particle_count,
-      obs_op: obs_op,
-      observer: observer,
+      total_steps,
+      particle_count,
+      obs_op,
+      observer,
       f: From::from(f),
       g: From::from(g),
       delta: delta,
@@ -234,22 +236,26 @@ impl<FM, GM, E, ObsOp, Obs> Algo<FM, GM, E, ObsOp, Obs>
     let t = self.step;
     self.step += 1;
     let particle_count = self.particle_count;
-    let m = ws.mean.dim();
-    let k = self.obs_op.operator_output_dim();
-    assert_eq!(m, self.obs_op.operator_input_dim());
+    let state_dim = ws.mean.dim();
+    let obs_dim = self.obs_op.operator_output_dim();
+    debug_assert_eq!(state_dim, self.obs_op.operator_input_dim());
     let neg_one: E = NumCast::from(-1).unwrap();
     let one: E = One::one();
+    let two = one + one;
+    let half = one / two;
 
-    let normal = Normal::new(Zero::zero(), One::one());
+    let normal = Normal::new(Zero::zero(),
+                             One::one());
 
     Zip::from(ws.cap_fn.axis_iter_mut(A0))
       .and(ws.fm_ws.axis_iter_mut(A0))
       .and(ws.particles.axis_iter(A0))
-      .par_apply(|mut cap_fn, ws, mean| {
+      .par_apply(|mut cap_fn, ws,
+                  mean| {
         self.f.model.run_model(t, ws, mean,
                                cap_fn.view_mut());
         Zip::from(&mut cap_fn)
-          .par_apply(|mut cap_fn| {
+          .apply(|mut cap_fn| {
             *cap_fn *= self.delta;
           });
       });
@@ -258,17 +264,17 @@ impl<FM, GM, E, ObsOp, Obs> Algo<FM, GM, E, ObsOp, Obs>
     Zip::from(ws.cap_gn.axis_iter_mut(A0))
       .and(ws.gm_ws.axis_iter_mut(A0))
       .and(ws.particles.axis_iter(A0))
-      .par_apply(|mut cap_gn, ws, mean| {
-        self.g.model.run_model(t, ws, mean, cap_gn.view_mut());
+      .par_apply(|mut cap_gn, ws,
+              mean| {
+        self.g.model.run_model(t, ws, mean,
+                               cap_gn.view_mut());
         Zip::from(&mut cap_gn)
-          .par_apply(|mut cap_gn| {
+          .apply(|mut cap_gn| {
             *cap_gn *= cap_gn.cj();
             *cap_gn = self.delta / *cap_gn;
           });
       });
     self.g.calls += particle_count as u64;
-
-    //println!("G_n: {:?}", ws.cap_gn);
 
     for mut ksi in ws.ksi.axis_iter_mut(A0) {
       for mut i in ksi.axis_iter_mut(A0) {
@@ -278,121 +284,99 @@ impl<FM, GM, E, ObsOp, Obs> Algo<FM, GM, E, ObsOp, Obs>
 
     assert!(self.observer.observe_into(t, ws.observation.view_mut()));
 
-    ws.particles.fill(E::zero());
-    let cap_x0 = [E::zero(); 1];
-    let cap_x0 = aview1(&cap_x0);
-    let cap_x0 = cap_x0.broadcast(m).unwrap();
-    let mut obs_op_jacobi0 = Array::zeros((k, m));
-    self.obs_op.eval_jacobian_at(cap_x0.view(),
-                                 obs_op_jacobi0.view_mut())?;
-    let obs_op_jacobi0 = obs_op_jacobi0;
-
     let b_np1 = ws.observation.view();
-    let mut z0 = b_np1.to_owned();
-    {
-      let mut t = Array::zeros(b_np1.dim());
-      self.obs_op.eval_at(cap_x0.view(), t.view_mut())?;
-      z0 -= &t;
-    }
-    let z0 = z0;
 
-    let mut weights = Array::zeros(self.particle_count);
-    let weight_div = (2.0 * PI).powf(m as f64 / 2.0);
+    let mut weights =
+      Array::zeros(self.particle_count);
+    let weight_div = (2.0 * PI).powf(state_dim as f64 / 2.0).recip();
     let weight_div = NumCast::from(weight_div).unwrap();
 
-    // `cap_xn` is the particle
+    let mut predict =
+      Array::zeros((self.particle_count,
+                    state_dim));
+
     Zip::from(ws.ksi.axis_iter(A0))
       .and(ws.cap_gn.axis_iter(A0))
       .and(ws.cap_fn.axis_iter(A0))
       .and(ws.particles.axis_iter_mut(A0))
       .and(weights.axis_iter_mut(A0))
-      .apply(|ksi, cap_gn, cap_fn,
-              mut cap_xn, mut weight| {
-        let mut cap_xj = Array::zeros(m);
-        let mut obs_op_jacobis = obs_op_jacobi0
-          .broadcast((2, k, m))
-          .unwrap()
-          .to_owned();
+      .and(predict.axis_iter_mut(A0))
+      .par_apply(|ksi,
+              cap_gn,
+              cap_fn,
+              mut cap_xn,
+              mut weight,
+              mut cap_xnp1| {
+        cap_xn.fill(E::zero());
 
-        let (last_obs_op_jacobi, obs_op_jacobi) =
-          obs_op_jacobis
-            .view_mut()
-            .split_at(A0, 1);
-        let mut last_obs_op_jacobi = last_obs_op_jacobi.into_subview(A0, 0);
-        let mut obs_op_jacobi = obs_op_jacobi.into_subview(A0, 0);
+        let mut cap_xj =
+          Array::zeros(state_dim);
+        let mut last_obs_op_jacobi =
+          Array::zeros((obs_dim, state_dim));
+        let mut obs_op_jacobi =
+          Array::zeros((obs_dim, state_dim));
 
-        let mut obs_op_jacobis_conj = Array::zeros((2, m, k));
-        let (last_obs_op_jacobi_conj, obs_op_jacobi_conj) =
-          obs_op_jacobis_conj
-            .view_mut()
-            .split_at(A0, 1);
-        let mut last_obs_op_jacobi_conj = last_obs_op_jacobi_conj
-          .into_subview(A0, 0);
-        let mut obs_op_jacobi_conj = obs_op_jacobi_conj
-          .into_subview(A0, 0);
-
-        par_conj_t(&mut obs_op_jacobi_conj.view_mut(),
-                   &obs_op_jacobi.view());
+        let mut last_obs_op_jacobi_conj =
+          Array::zeros((state_dim, obs_dim));
+        let mut obs_op_jacobi_conj =
+          Array::zeros((state_dim, obs_dim));
 
 
-        let mut sigma_invs = Array::zeros((2, m, m));
-        let (last_sigma_inv, sigma_inv) = sigma_invs.view_mut()
-          .split_at(A0, 1);
-        let mut last_sigma_inv = last_sigma_inv.into_subview(A0, 0);
-        let mut sigma_inv      = sigma_inv.into_subview(A0, 0);
+        let mut sigma_inv =
+          Array::zeros((state_dim, state_dim));
+        let mut last_sigma_inv =
+          Array::zeros((state_dim, state_dim));
+
+        let mut last_zj =
+          Array::zeros((obs_dim,));
+        let mut zj      =
+          Array::zeros((obs_dim,));
 
 
-        let mut zjs    = Array::zeros((2, k));
-        let (last_zj, zj) = zjs.view_mut()
-          .split_at(A0, 1);
-        let mut last_zj = last_zj.into_subview(A0, 0);
-        let mut zj      = zj.into_subview(A0, 0);
-        zj.assign(&z0);
+        let mut mhatj_b =
+          Array::zeros((state_dim,));
+        let mut last_mhatj =
+          Array::zeros((state_dim,));
+        let mut mhatj_t =
+          Array::zeros(zj.dim());
 
 
-        let mut mhatjs = Array::zeros((2, m));
-        let (last_mhatj, mhatj_b) = mhatjs.view_mut()
-          .split_at(A0, 1);
-        let mut last_mhatj = last_mhatj
-          .into_subview(A0, 0);
-        let mut mhatj_b = mhatj_b
-          .into_subview(A0, 0);
-
-        let mut mhatj_t = Array::zeros(zj.dim());
+        // for Cholesky factorization:
+        let mut t =
+          Array::zeros((obs_dim, obs_dim));
+        let mut t2 =
+          Array::zeros((state_dim, obs_dim));
 
         let mut lastcf: Option<Array<E, Ix2>> = None;
 
-        let mut iterations = 0;
         for i in 0.. {
-          iterations = i;
+          self.obs_op.eval_jacobian_at(cap_xj.view(),
+                                       obs_op_jacobi.view_mut())
+            .expect("observation operator jacobi error");
 
-          if i != 0 {
-            self.obs_op.eval_jacobian_at(cap_xj.view(),
-                                         obs_op_jacobi.view_mut())
-              .expect("observation operator jacobi error");
+          self.obs_op.eval_at(cap_xj.view(),
+                              zj.view_mut())
+            .expect("observation operator error");
+          Zip::from(&mut zj)
+            .and(&b_np1)
+            .apply(|z, &b| {
+              *z = b - *z;
+            });
 
-            self.obs_op.eval_at(cap_xj.view(), zj.view_mut())
-              .expect("observation operator error");
-            Zip::from(&mut zj)
-              .and(&b_np1)
-              .par_apply(|z, &b| {
-                *z = b - *z;
-              });
+          general_mat_vec_mul(One::one(),
+                              &obs_op_jacobi.view(),
+                              &cap_xj.view(),
+                              One::one(),
+                              &mut zj);
 
-            general_mat_vec_mul(One::one(),
-                                &obs_op_jacobi.view(),
-                                &cap_xj.view(),
-                                One::one(),
-                                &mut zj);
-
-            par_conj_t(&mut obs_op_jacobi_conj.view_mut(),
-                       &obs_op_jacobi.view());
-          }
+          conj_t(&mut obs_op_jacobi_conj.view_mut(),
+                 &obs_op_jacobi.view());
 
           // First, calculate Sigma_j, then factorize via Cholesky.
-          let mut t = Array::zeros((k, k));
+          if i != 0 {
+            t.fill(Zero::zero());
+          }
           t.diag_mut().assign(&self.cap_q_sqrd_inv);
-          let mut t2 = Array::zeros((m, k));
           general_mat_mul(One::one(),
                           &obs_op_jacobi_conj,
                           &t,
@@ -406,21 +390,24 @@ impl<FM, GM, E, ObsOp, Obs> Algo<FM, GM, E, ObsOp, Obs>
 
           Zip::from(sigma_inv.diag_mut())
             .and(&cap_gn)
-            .par_apply(|sigma, &cap_gn| {
+            .apply(|sigma, &cap_gn| {
               *sigma += cap_gn;
             });
 
-          let cf = Cholesky::compute(&sigma_inv, Symmetric::Lower)
+          let cf =
+            Cholesky::compute(&sigma_inv, Symmetric::Lower)
             .unwrap_or_else(|e| {
-              panic!("iteration {}: failed to compute Cholesky factors: {:?}",
-                     i, e);
+              panic!("iteration {}: failed to compute \
+              Cholesky factors: {:?}", i, e);
             });
 
           // calculate m hat by solving
           Zip::from(&mut mhatj_t)
             .and(&self.cap_q_sqrd_inv)
             .and(&zj)
-            .par_apply(|mhatj, &cap_q_sqrd_inv, &zj| {
+            .apply(|mhatj,
+                    &cap_q_sqrd_inv,
+                    &zj| {
               *mhatj = cap_q_sqrd_inv * zj;
             });
 
@@ -428,7 +415,7 @@ impl<FM, GM, E, ObsOp, Obs> Algo<FM, GM, E, ObsOp, Obs>
             .and(&cap_xn)
             .and(&cap_fn)
             .and(&cap_gn)
-            .par_apply(|mhatj, &cap_xn, &cap_fn, &cap_gn| {
+            .apply(|mhatj, &cap_xn, &cap_fn, &cap_gn| {
               *mhatj = (cap_xn + cap_fn) * cap_gn;
             });
 
@@ -438,24 +425,26 @@ impl<FM, GM, E, ObsOp, Obs> Algo<FM, GM, E, ObsOp, Obs>
                               One::one(),
                               &mut mhatj_b);
 
-          let mut mhatj = SolveLinear::compute(&sigma_inv,
-                                               &mhatj_b)
+          let mut mhatj =
+            SolveLinear::compute(&sigma_inv, &mhatj_b)
             .expect("particle solve failed");
 
           // store mhatj in mhatj_b
           // reuse mhatj for cap_xjp1
           mhatj_b.assign(&mhatj);
 
-          general_mat_vec_mul(One::one(),
+          let half: E = NumCast::from(2.0).unwrap();
+          general_mat_vec_mul(E::one(),
                               &cf,
                               &ksi,
-                              One::one(),
+                              half,
                               &mut mhatj);
           let cap_xjp1 = mhatj;
 
           let tol: E = NumCast::from(EPSILON * 10.0).unwrap();
           let stop = cap_xj.view()
-            .partial_eq_within_tol(&cap_xjp1.view(), tol);
+            .partial_eq_within_tol(&cap_xjp1.view(),
+                                   tol);
 
           if i + 1 >= 16 && !stop {
             println!("cap_xn: {:?}", cap_xn);
@@ -471,7 +460,7 @@ impl<FM, GM, E, ObsOp, Obs> Algo<FM, GM, E, ObsOp, Obs>
           if stop {
             // use the last iteration's values below!
             // don't copy cap_xj into cap_xn yet, we need
-            // the previous value still to calculate phi below.
+            // the previous value to calculate phi below.
             break;
           } else {
             cap_xj.assign(&cap_xjp1);
@@ -485,28 +474,27 @@ impl<FM, GM, E, ObsOp, Obs> Algo<FM, GM, E, ObsOp, Obs>
           }
         }
 
-        if iterations > 1 {
-          println!("completed implicit pf forward iteration in {} steps",
-                   iterations + 1);
-        }
-
         let capj: E = lastcf.as_ref().unwrap()
           .diag()
           .iter()
-          .map(|&v| one / v )
+          .map(|&v| v )
           .product();
         let capj = capj.mag();
         let capj = E::from_real(capj);
         //println!("|J| = {}", capj);
 
-        let mut cap_k = Array::zeros((k, k));
-        let mut t = Array::zeros((m, m));
+        let mut cap_k =
+          Array::zeros((obs_dim, obs_dim));
+        let mut t =
+          Array::zeros((state_dim, state_dim));
+
         Zip::from(&mut t.diag_mut())
           .and(&cap_gn)
           .apply(|t, &cap_gn| {
             *t = one / cap_gn;
           });
-        let mut t2 = Array::zeros((k, m));
+        let mut t2 =
+          Array::zeros((obs_dim, state_dim));
         general_mat_mul(One::one(),
                         &last_obs_op_jacobi,
                         &t,
@@ -520,33 +508,35 @@ impl<FM, GM, E, ObsOp, Obs> Algo<FM, GM, E, ObsOp, Obs>
 
         Zip::from(cap_k.diag_mut())
           .and(&self.cap_q_sqrd)
-          .par_apply(|cap_k, &cap_q_sqrd| {
+          .apply(|cap_k, &cap_q_sqrd| {
             *cap_k += cap_q_sqrd;
           });
 
-        let eye = Array::eye(k);
-        let cap_k_inv = SolveLinear::compute_multi(&cap_k, &eye)
-          .expect("cap_k inversion");
+        let eye = Array::eye(obs_dim);
+        let cap_k_inv =
+          SolveLinear::compute_multi(&cap_k, &eye)
+            .expect("cap_k inversion");
 
         // compute phi:
-        let mut lrsides = last_zj.to_owned();
+        let mut lrsides =
+          last_zj.to_owned();
+
+        let cap_xn_fn = &cap_xn + &cap_fn;
+
         general_mat_vec_mul(neg_one,
                             &last_obs_op_jacobi,
-                            &cap_xn,
-                            One::one(),
-                            &mut lrsides);
-        general_mat_vec_mul(neg_one,
-                            &last_obs_op_jacobi,
-                            &cap_fn,
+                            &cap_xn_fn,
                             One::one(),
                             &mut lrsides);
         let rside = lrsides
-          .into_shape((k, 1))
+          .into_shape((obs_dim, 1))
           .unwrap();
-        let mut lside = Array::zeros((1, k));
-        par_conj_t(&mut lside.view_mut(),
-                   &rside.view());
-        let mut out = Array::zeros((1, k));
+        let mut lside =
+          Array::zeros((1, obs_dim));
+        conj_t(&mut lside.view_mut(),
+               &rside.view());
+        let mut out =
+          Array::zeros((1, obs_dim));
         general_mat_mul(One::one(),
                         &lside,
                         &cap_k_inv,
@@ -555,7 +545,8 @@ impl<FM, GM, E, ObsOp, Obs> Algo<FM, GM, E, ObsOp, Obs>
         let phi = {
           let mut dest: [E; 1] = [Zero::zero(); 1];
           {
-            let mut dest_nd = aview_mut1(&mut dest[..])
+            let mut dest_nd =
+              aview_mut1(&mut dest[..])
               .into_shape((1, 1))
               .unwrap();
 
@@ -572,140 +563,117 @@ impl<FM, GM, E, ObsOp, Obs> Algo<FM, GM, E, ObsOp, Obs>
         let neg_phi: E = neg_one * phi;
         let phi_exp: E = neg_phi._exp();
 
-        /*let expected_phi = {
-          let b = b_np1.view().into_shape((k, 1)).unwrap();
-          let mut b_conj = Array::zeros(b.t().dim());
-          par_conj_t(&mut b_conj.view_mut(),
-                     &b.view());
-
-          let mut out = Array::zeros((1, 1));
-          let one_forth = one / NumCast::from(4.0f64).unwrap();
-          general_mat_mul(one_forth,
-                          &b_conj, &b,
-                          Zero::zero(),
-                          &mut out);
-
-          out[(0, 0)]
-        };
-        println!("phi: {}, expected phi: {}", phi, expected_phi);*/
-
-        weight[()] = phi_exp * capj / weight_div;
-        cap_xn.assign(&cap_xj);
+        weight[()] = phi_exp * capj * weight_div;
+        cap_xnp1.assign(&cap_xj);
       });
 
     // resample:
     let weight_sum = weights.iter().map(|&v| v ).sum();
-    weights.par_mapv_inplace(|v| v / weight_sum );
-
-    // update the mean:
-    {
-      let scale: E = NumCast::from(self.particle_count).unwrap();
-      Zip::from(ws.mean.axis_iter_mut(A0))
-        .and(ws.particles.axis_iter(A1))
-        .par_apply(|mut mean, particles| {
-          mean[()] = particles.axis_iter(A0)
-            .into_par_iter()
-            .zip(weights.axis_iter(A0).into_par_iter())
-            .map(|(v, weight)| v[()] * weight[()] )
-            .sum();
-          mean[()] /= scale;
-        });
-    }
-
-    let u32_max: E = NumCast::from(u32::max_value() - 1).unwrap();
-    let mut weights_u32: Vec<_> = weights
-      .iter()
-      .map(|&v| {
-        let v = v * u32_max;
-        let v: u32 = NumCast::from(v).unwrap();
-        v
-      })
-      .enumerate()
-      .map(|(idx, v)| {
-        Weighted {
-          weight: v,
-          item: idx,
-        }
-      })
-      .collect();
-
-    let wc = WeightedChoice::new(&mut weights_u32[..]);
-    {
-      let mut histogram = if let Some(ref mut diag) = diag {
-        if let &mut &mut Some(ref mut diag) = diag {
-          Some(&mut diag.histogram)
-        } else {
-          **diag = Some(Diagnostics {
-            particle_weights: Array::zeros(weights.dim()),
-            histogram: Array::zeros(self.particle_count),
-          });
-          diag.as_mut()
-            .map(|d| &mut d.histogram )
-        }
-      } else {
-        None
-      };
-      for i in 0..self.particle_count {
-        let new_particle_idx = wc.ind_sample(&mut rng);
-
-        if let Some(ref mut hist) = histogram {
-          hist[new_particle_idx] += 1;
-        }
-
-        if i == new_particle_idx { continue; }
-
-        let p = ws.particles.view_mut();
-        // to get around Rust's ownership rules:
-        let (mut to, from) = if i < new_particle_idx {
-          let (left, right) = p.split_at(A0, i + 1);
-          (left.into_subview(A0, i),
-           right.into_subview(A0, new_particle_idx - i - 1))
-        } else {
-          let (left, right) = p.split_at(A0, i);
-          (right.into_subview(A0, 0),
-           left.into_subview(A0, new_particle_idx))
-        };
-
-        to.assign(&from);
-      }
-    }
-
-    // update the covariance
-    if false {
-      let mut transformed_particles = ws.particles.clone();
-      Zip::from(&mut transformed_particles)
-        .and(&ws.mean.broadcast((self.particle_count, m)).unwrap())
-        .par_apply(|tp, &mean| {
-          *tp -= mean;
-        });
-
-      let dim = ws.particles.dim();
-      let mut transformed_particles_star = Array::zeros((dim.1, dim.0));
-      par_conj_t(&mut transformed_particles_star.view_mut(),
-                 &transformed_particles.view());
-
-      let s = one / NumCast::from(self.particle_count - 1).unwrap();
-      general_mat_mul(s,
-                      &transformed_particles,
-                      &transformed_particles_star,
-                      Zero::zero(),
-                      &mut ws.covariance);
-    }
+    weights.mapv_inplace(|v| v / weight_sum );
 
     if let Some(ref mut diag) = diag {
       if let &mut &mut Some(ref mut diag) = diag {
         diag.particle_weights.assign(&weights);
       } else {
         **diag = Some(Diagnostics {
-          particle_weights: weights,
+          particle_weights: weights.clone(),
           histogram: Array::zeros(self.particle_count),
         });
       }
     }
 
+    {
+      let mut u = ws
+        .particles
+        .view_mut();
+      let uhat = predict.view();
+
+      let mut weight_cdfs = weights
+        .clone();
+
+      for i in 0..self.particle_count {
+        let weight_sum: E = weights
+          .iter()
+          .map(|&v| v )
+          .sum();
+        let weight_sum = one / weight_sum;
+        weights
+          .mapv_inplace(|v| v * weight_sum );
+
+        weight_cdfs.assign(&weights);
+        weight_cdfs
+          .axis_iter_mut(A0)
+          .fold(E::zero(),
+                |mut sum, mut particle| {
+                  let t = particle[()];
+                  sum += t;
+                  particle[()] = sum;
+                  sum
+                });
+
+        let mut ix = weights.dim() - 1;
+        let sample = rng.next_f64();
+        let sample = NumCast::from(sample).unwrap();
+
+        let sum = E::zero();
+        for k in 0..self.particle_count {
+          let norm = weight_cdfs[k];
+          if norm < sample {
+            ix = k;
+            break;
+          }
+        }
+
+        let new_k = uhat
+          .subview(A0, ix);
+        u.row_mut(i)
+          .assign(&new_k);
+        let w = weights[ix];
+        weights[i] = w;
+      }
+    }
+    drop(predict);
+
+    // update the mean:
+    {
+      let scale: E = NumCast::from(self.particle_count).unwrap();
+      Zip::from(ws.mean.axis_iter_mut(A0))
+        .and(ws.particles.axis_iter(A1))
+        .apply(|mut mean, particles| {
+          mean[()] = particles
+            .axis_iter(A0)
+            .map(|v| v[()] )
+            .sum();
+          mean[()] /= scale;
+        });
+    }
+
+    // update the covariance
+    let mut transformed_particles =
+      ws.particles.clone();
+    Zip::from(&mut transformed_particles)
+      .and(&ws.mean.broadcast((self.particle_count, state_dim)).unwrap())
+      .apply(|tp, &mean| {
+        *tp -= mean;
+      });
+
+    let dim = ws.particles.dim();
+    let mut transformed_particles_star = Array::zeros((dim.1, dim.0));
+    conj_t(&mut transformed_particles_star.view_mut(),
+           &transformed_particles.view());
+
+    let s = one / NumCast::from(self.particle_count - 1).unwrap();
+    general_mat_mul(s,
+                    &transformed_particles_star,
+                    &transformed_particles,
+                    Zero::zero(),
+                    &mut ws.covariance);
+
     Ok(())
   }
 }
+
+fn max<T: PartialOrd>(a: T, b: T) -> T { if a > b { a } else { b } }
 
 #[test]
 fn null_model_high_dim() {
@@ -748,14 +716,14 @@ fn null_model_high_dim() {
   let mean = Array::zeros(N);
   let covariance = Array::eye(N);
 
-  let mut observation = make_2d_randn((N, 1),
-                                      Diagonal::from(1.0),
-                                      &mut rand);
-  observation.fill(1.0);
+  let mut observation =
+    make_2d_randn((N, 1), Diagonal::from(1.0),
+                  &mut rand);
+  //observation.fill(1.0);
 
   let init = Init {
-    mean: mean,
-    covariance: covariance,
+    mean,
+    covariance,
     particle_count: PARTICLES,
     cap_q: cap_q.into_diag(),
     total_steps: 1,
@@ -778,16 +746,19 @@ fn null_model_high_dim() {
   println!("weights: {:?}", diag.particle_weights);
   println!("histogram: {:?}", hist);
 
+  let weight = diag.particle_weights[0];
+  assert!(diag.particle_weights.iter().all(|&v| v == weight ));
+
   let mut fig = Figure::new();
   fig.set_terminal("wxt", "");
   {
     let mut a = fig.axes2d();
-    a.fill_between(0..hist.len(),
-                   repeat(0.0).take(hist.len()),
-                   hist.iter().map(|&v| v ),
+    a.fill_between(0..diag.particle_weights.len(),
+                   repeat(0.0).take(diag.particle_weights.len()),
+                   diag.particle_weights.iter().map(|&v| v ),
                    &[]);
   }
-  fig.show();
+  //fig.show();
 
   let mean_is_correct = ws.mean
     .view()
@@ -809,3 +780,4 @@ fn null_model_high_dim() {
     assert!(first.partial_eq_within_std_tol(weight));
   }
 }
+

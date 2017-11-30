@@ -4,14 +4,7 @@ name = "sixty-three"
 version = "0.1.0"
 
 [dependencies]
-gnuplot = "^0.0"
 ndarray = "^0.9"
-ndarray-parallel = "^0.3"
-ndarray-rand = "^0.5"
-num-complex = "^0.1"
-num-traits = "^0.1"
-rand = "^0.3"
-rayon = "0.7.0"
 
 [dependencies.na-discrete-filtering]
 optional = false

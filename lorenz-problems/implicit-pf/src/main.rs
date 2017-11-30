@@ -56,7 +56,7 @@ impl na_df::Model<f64> for GModel {
     Zip::from(&mut out)
       .and(mean)
       .and(&self.sigma)
-      .par_apply(|mut out, &mean, &sigma| {
+      .apply(|mut out, &mean, &sigma| {
         *out = sigma * mean;
       });
   }
@@ -197,7 +197,7 @@ fn for_model<M>(Params { n, tau, mu, seed, }: Params,
 
   let mut rand = rand::Isaac64Rng::from_seed(&seed[..]);
 
-  let gamma = 0.2;
+  let gamma = 0.1;
   let sigma = 2.0;
 
   let gamma = {
@@ -207,7 +207,7 @@ fn for_model<M>(Params { n, tau, mu, seed, }: Params,
   };
   let gamma_dt_sqrt = {
     let mut t = gamma.to_owned();
-    t.par_mapv_inplace(|v| v * dt_sqrt );
+    t.mapv_inplace(|v| v * dt_sqrt );
     t
   };
   let sigma = {
@@ -217,7 +217,7 @@ fn for_model<M>(Params { n, tau, mu, seed, }: Params,
   };
   let sigma_dt_sqrt = {
     let mut t = sigma.to_owned();
-    t.par_mapv_inplace(|v| v * dt_sqrt );
+    t.mapv_inplace(|v| v * dt_sqrt );
     t
   };
 
@@ -234,20 +234,25 @@ fn for_model<M>(Params { n, tau, mu, seed, }: Params,
   truth.subview_mut(A0, 0)
     .assign(&y);
 
-  let iter = ReportingIterator::new(1..STEPS, From::from("Truth gen"),);
+  let iter = ReportingIterator::new(1..STEPS,
+                                    From::from("Truth gen"),);
   for i in iter {
     let t = i as usize;
-    let (prev, mut next) = truth.view_mut().split_at(A0, t);
-    let prev2 = prev.subview(A0, t - 1);
-    let mut next2 = next.subview_mut(A0, 0);
+    let (prev, mut next) =
+      truth.view_mut().split_at(A0, t);
+    let prev2 =
+      prev.subview(A0, t - 1);
+    let mut next2 =
+      next.subview_mut(A0, 0);
 
     f_model.run_model(i as _,
                       workspace.view_mut(),
                       prev2.view(),
                       next2.view_mut());
 
-    let r = make_2d_randn((m, 1), Diagonal::from(sigma_dt_sqrt.view()),
-                          &mut rand);
+    let d: Diagonal<f64> = Diagonal::from(sigma_dt_sqrt.view());
+    let r =
+      make_2d_randn((m, 1), d, &mut rand);
     Zip::from(&mut next2)
       .and(&prev2)
       .and(&r.subview(A1, 0))
@@ -289,27 +294,27 @@ fn for_model<M>(Params { n, tau, mu, seed, }: Params,
       .and(&prev)
       .and(&observed)
       .and(&r.subview(A1, 0))
-      .par_apply(|mut dest, &prev, &observed, &noise| {
+      .apply(|mut dest, &prev, &observed, &noise| {
         *dest = prev + dt * observed + noise;
       });
   }
 
   let observer = SimpleObserver(observations.clone());
-  let mean = make_2d_randn((m, 1),
-                           Diagonal::from(mu),
-                           &mut rand)
+  let d: Diagonal<f64> = Diagonal::from(mu);
+  let mean =
+    make_2d_randn((m, 1), d, &mut rand)
     .into_shape(m)
     .unwrap();
   let covariance = Array::<f64, Ix2>::eye(n);
   let capq: Array<f64, Ix2> = Array::eye(k);
   let initer = Init {
-    mean: mean,
-    covariance: covariance,
+    mean,
+    covariance,
     particle_count: 20,
     cap_q: capq.into_diag(),
     total_steps: STEPS as _,
     obs_op: h,
-    observer: observer,
+    observer,
   };
 
   let (mut algo, mut workspace) = Algo::new(initer,
@@ -322,25 +327,27 @@ fn for_model<M>(Params { n, tau, mu, seed, }: Params,
     .expect("bootstrap step failed");
 
   let r = Run {
-    rand: rand,
+    rand,
     steps: STEPS,
 
-    truth: truth,
-    observations: observations,
+    truth,
+    observations,
 
     means: {
       let mut m = Array::zeros((STEPS as _, n));
-      m.subview_mut(A0, 0).assign(&workspace.mean);
+      m.subview_mut(A0, 0)
+        .assign(&workspace.mean);
       m
     },
     covariances: {
       let mut c = Array::zeros((STEPS as _, n, n));
-      c.subview_mut(A0, 0).assign(&workspace.covariance);
+      c.subview_mut(A0, 0)
+        .assign(&workspace.covariance);
       c
     },
 
-    algo: algo,
-    workspace: workspace,
+    algo,
+    workspace,
   };
 
   r

@@ -29,3 +29,7 @@ path = "../sixty-three"
 [dependencies.util]
 optional = false
 path = "../../util"
+
+[profile.release]
+lto = true
+debug = true
