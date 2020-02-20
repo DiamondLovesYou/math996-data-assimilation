@@ -377,6 +377,7 @@ impl<FM, GM, E, ObsOp, Obs> Algo<FM, GM, E, ObsOp, Obs>
             t.fill(Zero::zero());
           }
           t.diag_mut().assign(&self.cap_q_sqrd_inv);
+          // Calculate Sigma^(-1) = (H_J*)(Q*Q)^(-1)(H_J):
           general_mat_mul(One::one(),
                           &obs_op_jacobi_conj,
                           &t,
