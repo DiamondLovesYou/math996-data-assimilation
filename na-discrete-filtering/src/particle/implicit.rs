@@ -388,12 +388,8 @@ impl<FM, GM, E, ObsOp, Obs> Algo<FM, GM, E, ObsOp, Obs>
                           &obs_op_jacobi,
                           Zero::zero(),
                           &mut sigma_inv);
-
-          Zip::from(sigma_inv.diag_mut())
-            .and(&cap_gn)
-            .apply(|sigma, &cap_gn| {
-              *sigma += cap_gn;
-            });
+          sigma_inv.diag_mut()
+            .add_assign(&cap_gn);
 
           let cf =
             Cholesky::compute(&sigma_inv, Symmetric::Lower)
