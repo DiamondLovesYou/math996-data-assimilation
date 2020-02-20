@@ -777,4 +777,3 @@ fn null_model_high_dim() {
     assert!(first.partial_eq_within_std_tol(weight));
   }
 }
-
