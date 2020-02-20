@@ -21,7 +21,7 @@ members = ["na-quadrature", "na-discrete-filtering", "na-pde",
            "book-problems/p15"]
 
 [replace]
-"linxal:0.6.0" = { git = "file:///home/dick/Sync/workspace/linxal", branch = "merged-prs" }
+"linxal:0.6.0" = { git = "https://github.com/DiamondLovesYou/linxal.git", branch = "merged-prs" }
 "GSL:0.4.31" = { git = "https://github.com/DiamondLovesYou/rust-GSL.git", branch = "merged-all" }
 
 [profile.release]
